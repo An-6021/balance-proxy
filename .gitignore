@@ -1,0 +1,20 @@
+src-tauri/target/
+src-tauri/gen/
+*.log
+
+# local env
+.env
+
+# firecrawl_bot local/runtime files
+firecrawl_bot/venv/
+firecrawl_bot/__pycache__/
+firecrawl_bot/.DS_Store
+firecrawl_bot/*.pyc
+firecrawl_bot/*.png
+firecrawl_bot/*.html
+firecrawl_bot/accounts.txt
+firecrawl_bot/keys.txt
+firecrawl_bot/firecrawl_accounts*.txt
+firecrawl_bot/firecrawl_keys*.txt
+firecrawl_bot/tavily_accounts*.txt
+firecrawl_bot/tavily_keys*.txt
