@@ -16,6 +16,8 @@ BOT_OUTPUT_FILES = {
     },
 }
 
+BATCH_COOLDOWN_SECONDS = 3
+
 
 def append_line(path, line):
     if not line.endswith("\n"):
@@ -128,8 +130,8 @@ def main():
             print(f"\033[91mCRITICAL ERROR: {e}\033[0m")
         
         if i < count - 1:
-            print("Cooling down 10s...")
-            time.sleep(10)
+            print(f"Cooling down {BATCH_COOLDOWN_SECONDS}s...")
+            time.sleep(BATCH_COOLDOWN_SECONDS)
 
     print(f"\n\033[1m--- {bot_name} Batch Finished ---\033[0m")
     print(f"Total: {count} | Success: \033[92m{success_count}\033[0m")
