@@ -4,4 +4,4 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$ROOT_DIR"
 
-npx tauri build --config src-tauri/tauri.conf.json
+cargo tauri build --config src-tauri/tauri.conf.json

@@ -14,6 +14,11 @@ BOT_OUTPUT_FILES = {
         "keys": "tavily_keys.txt",
         "failed": "tavily_accounts_failed.txt",
     },
+    "Exa": {
+        "accounts": "exa_accounts.txt",
+        "keys": "exa_keys.txt",
+        "failed": "exa_accounts_failed.txt",
+    },
 }
 
 BATCH_COOLDOWN_SECONDS = 3
@@ -83,12 +88,17 @@ def main():
     print("\n\033[1mWelcome to Multi-Bot Registration\033[0m")
     print("1. Firecrawl")
     print("2. Tavily")
+    print("3. Exa")
     
-    choice = input("\nSelect bot (1/2, default 1): ").strip()
+    choice = input("\nSelect bot (1/2/3, default 1): ").strip()
     if choice == "2":
         from tavily_reg import run_registration as run_tavily
         bot_name = "Tavily"
         run_func = lambda: run_tavily(headless=False)
+    elif choice == "3":
+        from exa_reg import run_registration as run_exa
+        bot_name = "Exa"
+        run_func = lambda: run_exa(headless=False)
     else:
         from firecrawl_reg import run_registration as run_firecrawl
         bot_name = "Firecrawl"
@@ -114,18 +124,19 @@ def main():
                 success_count += 1
                 api_key = result["api_key"]
                 email = result["email"]
-                password = result["password"]
+                password = result.get("password", "")
                 
                 # Keep account credentials and API keys in separate files per bot.
-                append_line(output_files["accounts"], f"{email}:{password}")
+                if password:
+                    append_line(output_files["accounts"], f"{email}:{password}")
+                else:
+                    append_line(output_files["accounts"], f"{email}")
                 append_line(output_files["keys"], api_key)
                 
                 print(f"\033[92mSUCCESS: {api_key}\033[0m")
             else:
                 email = result.get("email", "Unknown") if result else "Unknown"
-                password = result.get("password", "Unknown") if result else "Unknown"
                 print(f"\033[91mFAILED to extract API key for {email}.\033[0m")
-                append_line(output_files["failed"], f"{email}:{password}")
         except Exception as e:
             print(f"\033[91mCRITICAL ERROR: {e}\033[0m")
         

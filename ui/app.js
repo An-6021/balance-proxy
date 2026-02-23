@@ -55,18 +55,25 @@ const I18N = {
     "cfg.proxyToken": "代理 Token",
     "cfg.firecrawlUpstreamUrl": "Firecrawl 上游 Base URL",
     "cfg.tavilyUpstreamUrl": "Tavily 上游 Base URL",
+    "cfg.exaUpstreamUrl": "Exa 上游 Base URL",
     "cfg.networkSettings": "网络设置",
     "cfg.systemSettings": "系统设置",
     "cfg.host": "主机",
     "cfg.firecrawlPort": "Firecrawl 端口",
     "cfg.tavilyPort": "Tavily 端口",
+    "cfg.exaPort": "Exa 端口",
     "cfg.requestTimeout": "请求超时",
     "cfg.keyCooldown": "Key 冷却时间",
+    "cfg.autoStart": "自动启动代理",
+    "cfg.autoStartHint": "应用启动时自动开启代理服务器",
+    "cfg.silentStart": "静默启动",
+    "cfg.silentStartHint": "启动时不显示主窗口（仅在系统托盘运行）",
     "cfg.launchOnLogin": "开机自启",
     "cfg.launchOnLoginHint": "系统登录后自动启动本应用",
     "cfg.apiKeysSection": "API Keys",
     "cfg.firecrawlApiKeysHint": "Firecrawl Keys：每行一个，或逗号分隔",
     "cfg.tavilyApiKeysHint": "Tavily Keys：每行一个，或逗号分隔",
+    "cfg.exaApiKeysHint": "Exa Keys：每行一个，或逗号分隔",
     "cfg.save": "保存配置",
     "cfg.unsaved": "有未保存的更改",
     "cfg.saved": "配置已保存",
@@ -79,6 +86,7 @@ const I18N = {
     "keys.desc": "监控 Firecrawl 与 Tavily API Keys 的健康状态。",
     "keys.firecrawl": "Firecrawl Keys",
     "keys.tavily": "Tavily Keys",
+    "keys.exa": "Exa Keys",
     "keys.notConfigured": "未配置",
     "keys.active": "活跃",
     "keys.cooldown": "冷却中",
@@ -92,11 +100,18 @@ const I18N = {
     "mcp.desc": "选择要生成的配置并复制到 MCP 客户端配置文件。",
     "mcp.scopeLabel": "配置范围",
     "mcp.scopeBoth": "Firecrawl + Tavily",
+    "mcp.scopeAll": "全部 (Firecrawl + Tavily + Exa)",
     "mcp.scopeFirecrawl": "仅 Firecrawl",
     "mcp.scopeTavily": "仅 Tavily",
+    "mcp.scopeExa": "仅 Exa",
     "mcp.unavailable": "未配置",
     "mcp.copyJson": "复制当前 JSON",
     "mcp.instructions": "使用说明",
+    "mcp.errFirecrawl": "Firecrawl 未完全配置",
+    "mcp.errTavily": "Tavily 未完全配置",
+    "mcp.errExa": "Exa 未完全配置",
+    "mcp.errInvalid": "无效的 MCP 目标",
+    "mcp.errNone": "没有可用配置",
     "mcp.step1": "在 <a id=\"mcpGoDash\">仪表盘</a> 启动代理",
     "mcp.step2": "从下拉框选择配置范围并复制 JSON",
     "mcp.step3": "粘贴到 MCP 客户端配置文件（Claude Desktop、Cursor 等）",
@@ -105,7 +120,7 @@ const I18N = {
     "mcp.loadFailed": "加载 MCP 配置失败: ",
 
     // Logs
-    "logs.title": "日志",
+    "logs.title": "最近日志",
     "logs.all": "全部",
     "logs.search": "搜索日志...",
     "logs.refresh": "刷新",
@@ -149,18 +164,25 @@ const I18N = {
     "cfg.proxyToken": "Proxy Token",
     "cfg.firecrawlUpstreamUrl": "Firecrawl Upstream Base URL",
     "cfg.tavilyUpstreamUrl": "Tavily Upstream Base URL",
+    "cfg.exaUpstreamUrl": "Exa Upstream Base URL",
     "cfg.networkSettings": "Network Settings",
     "cfg.systemSettings": "System Settings",
     "cfg.host": "Host",
     "cfg.firecrawlPort": "Firecrawl Port",
     "cfg.tavilyPort": "Tavily Port",
+    "cfg.exaPort": "Exa Port",
     "cfg.requestTimeout": "Request Timeout",
     "cfg.keyCooldown": "Key Cooldown",
+    "cfg.autoStart": "Auto-start Proxy",
+    "cfg.autoStartHint": "Automatically start the proxy server when the app launches",
+    "cfg.silentStart": "Silent Start",
+    "cfg.silentStartHint": "Hide the main window on launch (run in system tray only)",
     "cfg.launchOnLogin": "Launch on login",
     "cfg.launchOnLoginHint": "Automatically start this app after user login",
     "cfg.apiKeysSection": "API Keys",
     "cfg.firecrawlApiKeysHint": "Firecrawl keys: one per line, or comma-separated",
     "cfg.tavilyApiKeysHint": "Tavily keys: one per line, or comma-separated",
+    "cfg.exaApiKeysHint": "Exa keys: one per line, or comma-separated",
     "cfg.save": "Save Configuration",
     "cfg.unsaved": "Unsaved changes",
     "cfg.saved": "Configuration saved",
@@ -172,6 +194,7 @@ const I18N = {
     "keys.desc": "Monitor the health and status of Firecrawl and Tavily API keys.",
     "keys.firecrawl": "Firecrawl Keys",
     "keys.tavily": "Tavily Keys",
+    "keys.exa": "Exa Keys",
     "keys.notConfigured": "Not configured",
     "keys.active": "Active",
     "keys.cooldown": "Cooldown",
@@ -184,11 +207,18 @@ const I18N = {
     "mcp.desc": "Choose a scope and copy the generated JSON to your MCP client settings file.",
     "mcp.scopeLabel": "Scope",
     "mcp.scopeBoth": "Firecrawl + Tavily",
+    "mcp.scopeAll": "All (Firecrawl + Tavily + Exa)",
     "mcp.scopeFirecrawl": "Firecrawl only",
     "mcp.scopeTavily": "Tavily only",
+    "mcp.scopeExa": "Exa only",
     "mcp.unavailable": "Unavailable",
     "mcp.copyJson": "Copy current JSON",
     "mcp.instructions": "Instructions",
+    "mcp.errFirecrawl": "Firecrawl is not fully configured",
+    "mcp.errTavily": "Tavily is not fully configured",
+    "mcp.errExa": "Exa is not fully configured",
+    "mcp.errInvalid": "Invalid MCP target",
+    "mcp.errNone": "No configured MCP providers",
     "mcp.step1": "Start the proxy on the <a id=\"mcpGoDash\">Dashboard</a>",
     "mcp.step2": "Select a scope from the dropdown and copy the JSON",
     "mcp.step3": "Paste it into your MCP client config file (Claude Desktop, Cursor, etc.)",
@@ -196,7 +226,7 @@ const I18N = {
     "mcp.note": "<code>FIRECRAWL_API_URL</code>/<code>FIRECRAWL_API_KEY</code> and <code>TAVILY_API_URL</code>/<code>TAVILY_API_KEY</code> both point to your local proxies and proxy token.",
     "mcp.loadFailed": "Failed to load MCP config: ",
 
-    "logs.title": "Logs",
+    "logs.title": "Recent Logs",
     "logs.all": "All",
     "logs.search": "Search logs...",
     "logs.refresh": "Refresh",
@@ -384,6 +414,9 @@ function isProviderConfigured(config, provider) {
   if (provider === "tavily") {
     return !!((config?.tavilyApiKeys || []).length && (config?.tavilyUpstreamBaseUrl || "").trim());
   }
+  if (provider === "exa") {
+    return !!((config?.exaApiKeys || []).length && (config?.exaUpstreamBaseUrl || "").trim());
+  }
   return false;
 }
 
@@ -402,6 +435,11 @@ function buildFallbackKeySnapshot(config, status) {
       running: !!status?.tavilyRunning,
       keys: tavilyConfigured ? idleStatusesFromKeys(config?.tavilyApiKeys) : [],
     },
+    exa: {
+      configured: isProviderConfigured(config, "exa"),
+      running: !!status?.exaRunning,
+      keys: isProviderConfigured(config, "exa") ? idleStatusesFromKeys(config?.exaApiKeys) : [],
+    },
   };
 }
 
@@ -416,6 +454,7 @@ function mergeConfiguredKeys(snapshot) {
   const merged = [];
   if (snapshot?.firecrawl?.configured) merged.push(...(snapshot.firecrawl.keys || []));
   if (snapshot?.tavily?.configured) merged.push(...(snapshot.tavily.keys || []));
+  if (snapshot?.exa?.configured) merged.push(...(snapshot.exa.keys || []));
   return merged;
 }
 
@@ -426,6 +465,16 @@ function highlightJSON(json) {
     .replace(/"([^"]+)"(\s*:)/g, '<span class="json-key">"$1"</span>$2')
     .replace(/:\s*"([^"]*)"/g, ': <span class="json-string">"$1"</span>')
     .replace(/[{}\[\]]/g, '<span class="json-bracket">$&</span>');
+}
+
+function translateMcpError(errStr) {
+  if (!errStr) return errStr;
+  if (errStr.includes("Firecrawl is not fully configured")) return t("mcp.errFirecrawl");
+  if (errStr.includes("Tavily is not fully configured")) return t("mcp.errTavily");
+  if (errStr.includes("Exa is not fully configured")) return t("mcp.errExa");
+  if (errStr.includes("Invalid MCP target")) return t("mcp.errInvalid");
+  if (errStr.includes("No configured MCP providers")) return t("mcp.errNone");
+  return errStr;
 }
 
 // ============================================
@@ -463,14 +512,15 @@ sidebarNav.addEventListener("click", (e) => {
 
 // ---- Global status polling ----
 function isAnyProxyRunning(status) {
-  return !!(status && (status.anyRunning || status.running || status.firecrawlRunning || status.tavilyRunning));
+  return !!(status && (status.anyRunning || status.running || status.firecrawlRunning || status.tavilyRunning || status.exaRunning));
 }
 
 function formatProxyUrls(status) {
   const urls = [];
-  if (status?.listenUrl) urls.push(`FC ${status.listenUrl}`);
-  if (status?.tavilyListenUrl) urls.push(`TV ${status.tavilyListenUrl}`);
-  return urls.join(" | ") || "-";
+  if (status?.listenUrl) urls.push(`FC ${status.listenUrl.replace("http://", "")}`);
+  if (status?.tavilyListenUrl) urls.push(`TV ${status.tavilyListenUrl.replace("http://", "")}`);
+  if (status?.exaListenUrl) urls.push(`EXA ${status.exaListenUrl.replace("http://", "")}`);
+  return urls.join("<br>") || "-";
 }
 
 async function updateSidebarStatus() {
@@ -479,15 +529,15 @@ async function updateSidebarStatus() {
     if (status?.running) {
       sidebarBadge.className = "badge badge-success";
       sidebarBadge.textContent = t("status.running");
-      sidebarUrl.textContent = formatProxyUrls(status);
+      sidebarUrl.innerHTML = formatProxyUrls(status);
     } else if (isAnyProxyRunning(status)) {
       sidebarBadge.className = "badge badge-warning";
       sidebarBadge.textContent = t("status.degraded");
-      sidebarUrl.textContent = formatProxyUrls(status);
+      sidebarUrl.innerHTML = formatProxyUrls(status);
     } else {
       sidebarBadge.className = "badge badge-danger";
       sidebarBadge.textContent = t("status.stopped");
-      sidebarUrl.textContent = "-";
+      sidebarUrl.innerHTML = "-";
     }
     return status;
   } catch {
@@ -591,7 +641,7 @@ pages.dashboard = {
     seeAllBtn.addEventListener("click", () => navigate("logs"));
 
     copyBtn.addEventListener("click", async () => {
-      const text = await invoke("build_mcp_config", { target: "both" });
+      const text = await invoke("build_mcp_config", { target: "all" });
       copyWithFeedback(text, copyBtn);
     });
 
@@ -606,7 +656,7 @@ pages.dashboard = {
         invoke("get_proxy_status"),
         invoke("load_proxy_config"),
         invoke("get_recent_logs"),
-        invoke("build_mcp_config", { target: "both" }).catch((e) => String(e || "")),
+        invoke("build_mcp_config", { target: "all" }).catch((e) => String(e || "")),
         invoke("get_key_status_snapshot").catch(() => null),
       ]);
       const keySnapshot = keySnapshotRaw || buildFallbackKeySnapshot(config, status);
@@ -624,14 +674,14 @@ pages.dashboard = {
         if (anyRunning) {
           dot.className = "status-dot running";
           text.textContent = t(getStatusLabelKey(status));
-          url.textContent = formatProxyUrls(status);
+          url.innerHTML = formatProxyUrls(status);
           startBtn.disabled = fullyRunning;
           stopBtn.disabled = false;
           if (!this._proxyStartTime) this._proxyStartTime = Date.now();
         } else {
           dot.className = "status-dot";
           text.textContent = t("status.stopped");
-          url.textContent = "-";
+          url.innerHTML = "-";
           startBtn.disabled = false;
           stopBtn.disabled = true;
           this._proxyStartTime = null;
@@ -660,7 +710,13 @@ pages.dashboard = {
       }
 
       const mcpEl = document.getElementById("dashMcp");
-      if (mcpEl) mcpEl.innerHTML = highlightJSON(mcpText);
+      if (mcpEl) {
+        if (mcpText.includes("not fully configured") || mcpText.includes("Invalid MCP target") || mcpText.includes("No configured MCP")) {
+          mcpEl.innerHTML = `<div style="padding:12px;color:var(--color-danger)">${translateMcpError(mcpText)}</div>`;
+        } else {
+          mcpEl.innerHTML = highlightJSON(mcpText);
+        }
+      }
     } catch {
       // silently ignore
     }
@@ -711,6 +767,10 @@ pages.config = {
           <label class="form-label">${t("cfg.tavilyUpstreamUrl")} <span class="form-hint">TAVILY_UPSTREAM_BASE_URL</span></label>
           <input id="cfgTavilyUpstreamUrl" class="form-input" type="url" placeholder="https://api.tavily.com" />
         </div>
+        <div class="form-group">
+          <label class="form-label">${t("cfg.exaUpstreamUrl")} <span class="form-hint">EXA_UPSTREAM_BASE_URL</span></label>
+          <input id="cfgExaUpstreamUrl" class="form-input" type="url" placeholder="https://api.exa.ai" />
+        </div>
       </div>
 
       <div class="card">
@@ -725,9 +785,15 @@ pages.config = {
             <input id="cfgPort" class="form-input" type="number" min="1" max="65535" />
           </div>
         </div>
-        <div class="form-group">
-          <label class="form-label">${t("cfg.tavilyPort")} <span class="form-hint">TAVILY_PORT</span></label>
-          <input id="cfgTavilyPort" class="form-input" type="number" min="1" max="65535" />
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label">${t("cfg.tavilyPort")} <span class="form-hint">TAVILY_PORT</span></label>
+            <input id="cfgTavilyPort" class="form-input" type="number" min="1" max="65535" />
+          </div>
+          <div class="form-group">
+            <label class="form-label">${t("cfg.exaPort")} <span class="form-hint">EXA_PORT</span></label>
+            <input id="cfgExaPort" class="form-input" type="number" min="1" max="65535" />
+          </div>
         </div>
         <div class="form-row">
           <div class="form-group">
@@ -757,10 +823,26 @@ pages.config = {
           <label class="form-label">${t("cfg.tavilyApiKeysHint")}</label>
           <textarea id="cfgTavilyApiKeys" class="form-textarea" rows="5" placeholder="tvly-key-1&#10;tvly-key-2&#10;tvly-key-3"></textarea>
         </div>
+        <div class="form-group">
+          <label class="form-label">${t("cfg.exaApiKeysHint")}</label>
+          <textarea id="cfgExaApiKeys" class="form-textarea" rows="5" placeholder="exa-key-1&#10;exa-key-2&#10;exa-key-3"></textarea>
+        </div>
       </div>
 
       <div class="card">
         <div class="card-header">${t("cfg.systemSettings")}</div>
+        <label class="toggle-row" for="cfgAutoStart">
+          <span>${t("cfg.autoStart")}</span>
+          <input id="cfgAutoStart" type="checkbox" />
+        </label>
+        <p class="form-note">${t("cfg.autoStartHint")}</p>
+
+        <label class="toggle-row" for="cfgSilentStart">
+          <span>${t("cfg.silentStart")}</span>
+          <input id="cfgSilentStart" type="checkbox" />
+        </label>
+        <p class="form-note">${t("cfg.silentStartHint")}</p>
+
         <label class="toggle-row" for="cfgLaunchOnLogin">
           <span>${t("cfg.launchOnLogin")}</span>
           <input id="cfgLaunchOnLogin" type="checkbox" />
@@ -792,18 +874,25 @@ pages.config = {
       "cfgProxyToken",
       "cfgUpstreamUrl",
       "cfgTavilyUpstreamUrl",
+      "cfgExaUpstreamUrl",
       "cfgHost",
       "cfgPort",
       "cfgTavilyPort",
+      "cfgExaPort",
       "cfgTimeout",
       "cfgCooldown",
       "cfgApiKeys",
       "cfgTavilyApiKeys",
+      "cfgExaApiKeys",
     ];
     inputs.forEach((id) => {
       const el = document.getElementById(id);
       if (el) el.addEventListener("input", () => this._checkDirty());
     });
+    const autoStartEl = document.getElementById("cfgAutoStart");
+    if (autoStartEl) autoStartEl.addEventListener("change", () => this._checkDirty());
+    const silentStartEl = document.getElementById("cfgSilentStart");
+    if (silentStartEl) silentStartEl.addEventListener("change", () => this._checkDirty());
     const launchOnLoginEl = document.getElementById("cfgLaunchOnLogin");
     if (launchOnLoginEl) launchOnLoginEl.addEventListener("change", () => this._checkDirty());
 
@@ -837,11 +926,16 @@ pages.config = {
       upstreamBaseUrl: document.getElementById("cfgUpstreamUrl").value.trim(),
       tavilyApiKeys: parseKeys(document.getElementById("cfgTavilyApiKeys").value),
       tavilyUpstreamBaseUrl: document.getElementById("cfgTavilyUpstreamUrl").value.trim(),
+      exaApiKeys: parseKeys(document.getElementById("cfgExaApiKeys").value),
+      exaUpstreamBaseUrl: document.getElementById("cfgExaUpstreamUrl").value.trim(),
       requestTimeoutMs: Number(document.getElementById("cfgTimeout").value),
       keyCooldownSeconds: Number(document.getElementById("cfgCooldown").value),
       host: document.getElementById("cfgHost").value.trim(),
       port: Number(document.getElementById("cfgPort").value),
       tavilyPort: Number(document.getElementById("cfgTavilyPort").value),
+      exaPort: Number(document.getElementById("cfgExaPort").value),
+      autoStart: !!document.getElementById("cfgAutoStart").checked,
+      silentStart: !!document.getElementById("cfgSilentStart").checked,
       launchOnLogin: !!document.getElementById("cfgLaunchOnLogin").checked,
     };
   },
@@ -850,13 +944,18 @@ pages.config = {
     document.getElementById("cfgProxyToken").value = c.proxyToken || "";
     document.getElementById("cfgUpstreamUrl").value = c.upstreamBaseUrl || "";
     document.getElementById("cfgTavilyUpstreamUrl").value = c.tavilyUpstreamBaseUrl || "";
+    document.getElementById("cfgExaUpstreamUrl").value = c.exaUpstreamBaseUrl || "";
     document.getElementById("cfgHost").value = c.host || "127.0.0.1";
     document.getElementById("cfgPort").value = String(c.port || 8787);
     document.getElementById("cfgTavilyPort").value = String(c.tavilyPort || 8788);
+    document.getElementById("cfgExaPort").value = String(c.exaPort || 8789);
     document.getElementById("cfgTimeout").value = String(c.requestTimeoutMs || 60000);
     document.getElementById("cfgCooldown").value = String(c.keyCooldownSeconds || 60);
     document.getElementById("cfgApiKeys").value = normalizeKeysText(c.firecrawlApiKeys);
     document.getElementById("cfgTavilyApiKeys").value = normalizeKeysText(c.tavilyApiKeys);
+    document.getElementById("cfgExaApiKeys").value = normalizeKeysText(c.exaApiKeys);
+    document.getElementById("cfgAutoStart").checked = c.autoStart ?? true;
+    document.getElementById("cfgSilentStart").checked = c.silentStart ?? false;
     document.getElementById("cfgLaunchOnLogin").checked = !!c.launchOnLogin;
   },
 
@@ -869,18 +968,23 @@ pages.config = {
       cur.proxyToken !== (saved.proxyToken || "") ||
       cur.upstreamBaseUrl !== (saved.upstreamBaseUrl || "") ||
       cur.tavilyUpstreamBaseUrl !== (saved.tavilyUpstreamBaseUrl || "") ||
+      cur.exaUpstreamBaseUrl !== (saved.exaUpstreamBaseUrl || "") ||
       cur.host !== (saved.host || "127.0.0.1") ||
       cur.port !== (saved.port || 8787) ||
       cur.tavilyPort !== (saved.tavilyPort || 8788) ||
+      cur.exaPort !== (saved.exaPort || 8789) ||
       cur.requestTimeoutMs !== (saved.requestTimeoutMs || 60000) ||
       cur.keyCooldownSeconds !== (saved.keyCooldownSeconds || 60) ||
       JSON.stringify(cur.firecrawlApiKeys) !== JSON.stringify(saved.firecrawlApiKeys || []) ||
       JSON.stringify(cur.tavilyApiKeys) !== JSON.stringify(saved.tavilyApiKeys || []) ||
+      JSON.stringify(cur.exaApiKeys) !== JSON.stringify(saved.exaApiKeys || []) ||
+      cur.autoStart !== (saved.autoStart ?? true) ||
+      cur.silentStart !== (saved.silentStart ?? false) ||
       cur.launchOnLogin !== this._savedLaunchOnLogin;
     badge.classList.toggle("visible", dirty);
   },
 
-  destroy() {},
+  destroy() { },
 };
 
 // ============================================
@@ -900,6 +1004,8 @@ pages.keys = {
         <div class="key-list" id="keyListFirecrawl"></div>
         <div class="card-header" style="margin-top:16px">${t("keys.tavily")}</div>
         <div class="key-list" id="keyListTavily"></div>
+        <div class="card-header" style="margin-top:16px">${t("keys.exa")}</div>
+        <div class="key-list" id="keyListExa"></div>
       </div>
       <div class="keys-legend">
         <span class="keys-legend-item"><span class="legend-dot green"></span> ${t("keys.active")}</span>
@@ -959,7 +1065,8 @@ pages.keys = {
   async _refresh() {
     const firecrawlListEl = document.getElementById("keyListFirecrawl");
     const tavilyListEl = document.getElementById("keyListTavily");
-    if (!firecrawlListEl || !tavilyListEl) return;
+    const exaListEl = document.getElementById("keyListExa");
+    if (!firecrawlListEl || !tavilyListEl || !exaListEl) return;
 
     try {
       const [config, status, snapshotRaw] = await Promise.all([
@@ -970,9 +1077,11 @@ pages.keys = {
       const snapshot = snapshotRaw || buildFallbackKeySnapshot(config, status);
       this._renderProviderRows(firecrawlListEl, snapshot.firecrawl);
       this._renderProviderRows(tavilyListEl, snapshot.tavily);
+      this._renderProviderRows(exaListEl, snapshot.exa);
     } catch {
       firecrawlListEl.innerHTML = `<div style="padding:12px;color:var(--text-muted)">${t("keys.loadFailed")}</div>`;
       tavilyListEl.innerHTML = `<div style="padding:12px;color:var(--text-muted)">${t("keys.loadFailed")}</div>`;
+      exaListEl.innerHTML = `<div style="padding:12px;color:var(--text-muted)">${t("keys.loadFailed")}</div>`;
     }
   },
 
@@ -1036,10 +1145,12 @@ pages.mcp = {
 
       const firecrawlConfigured = isProviderConfigured(config, "firecrawl");
       const tavilyConfigured = isProviderConfigured(config, "tavily");
+      const exaConfigured = isProviderConfigured(config, "exa");
       const options = [
-        { value: "both", labelKey: "mcp.scopeBoth", available: firecrawlConfigured || tavilyConfigured },
+        { value: "all", labelKey: "mcp.scopeAll", available: firecrawlConfigured || tavilyConfigured || exaConfigured },
         { value: "firecrawl", labelKey: "mcp.scopeFirecrawl", available: firecrawlConfigured },
         { value: "tavily", labelKey: "mcp.scopeTavily", available: tavilyConfigured },
+        { value: "exa", labelKey: "mcp.scopeExa", available: exaConfigured },
       ];
 
       const optionLabel = (option) => {
@@ -1049,12 +1160,18 @@ pages.mcp = {
           : `${t(option.labelKey)} (${t("mcp.unavailable")})`;
       };
 
-      if (firecrawlConfigured && tavilyConfigured) {
-        currentTarget = "both";
+      if (firecrawlConfigured && tavilyConfigured && exaConfigured) {
+        currentTarget = "all";
+      } else if (firecrawlConfigured && tavilyConfigured) {
+        currentTarget = "all";
       } else if (firecrawlConfigured) {
         currentTarget = "firecrawl";
       } else if (tavilyConfigured) {
         currentTarget = "tavily";
+      } else if (exaConfigured) {
+        currentTarget = "exa";
+      } else {
+        currentTarget = "all";
       }
 
       const setOpen = (open) => {
@@ -1088,7 +1205,7 @@ pages.mcp = {
           copyBtn.disabled = false;
         } catch (e) {
           currentRaw = "";
-          if (el) el.textContent = String(e || "");
+          if (el) el.innerHTML = `<div style="padding:12px;color:var(--color-danger)">${translateMcpError(String(e || ""))}</div>`;
           copyBtn.disabled = true;
         }
       };
@@ -1232,7 +1349,7 @@ pages.logs = {
     try {
       this._allLogs = await invoke("get_recent_logs");
       this._renderLogs();
-    } catch {}
+    } catch { }
   },
 
   _renderLogs() {
@@ -1295,7 +1412,7 @@ async function bootstrap() {
 
   try {
     await updateSidebarStatus();
-  } catch {}
+  } catch { }
 
   navigate("dashboard");
 

@@ -18,6 +18,8 @@ firecrawl_bot/firecrawl_accounts*.txt
 firecrawl_bot/firecrawl_keys*.txt
 firecrawl_bot/tavily_accounts*.txt
 firecrawl_bot/tavily_keys*.txt
+firecrawl_bot/exa_accounts*.txt
+firecrawl_bot/exa_keys*.txt
 
 # local codex/claude workspace data
 .claude/

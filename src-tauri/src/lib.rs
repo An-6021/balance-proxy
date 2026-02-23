@@ -15,7 +15,7 @@ use axum::{Json, Router};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use tauri::menu::MenuBuilder;
+use tauri::menu::{MenuBuilder, MenuItem};
 use tauri::tray::TrayIconBuilder;
 use tauri::{Manager, WindowEvent};
 use tauri_plugin_autostart::MacosLauncher;
@@ -65,9 +65,14 @@ struct ProxyConfig {
     tavily_upstream_base_url: String,
     request_timeout_ms: u64,
     key_cooldown_seconds: u64,
+    auto_start: bool,
+    silent_start: bool,
     host: String,
     port: u16,
     tavily_port: u16,
+    exa_api_keys: Vec<String>,
+    exa_upstream_base_url: String,
+    exa_port: u16,
 }
 
 impl Default for ProxyConfig {
@@ -80,9 +85,14 @@ impl Default for ProxyConfig {
             tavily_upstream_base_url: "https://api.tavily.com".to_string(),
             request_timeout_ms: 60_000,
             key_cooldown_seconds: 60,
+            auto_start: true,
+            silent_start: false,
             host: "127.0.0.1".to_string(),
             port: 8787,
             tavily_port: 8788,
+            exa_api_keys: Vec::new(),
+            exa_upstream_base_url: "https://api.exa.ai".to_string(),
+            exa_port: 8789,
         }
     }
 }
@@ -104,6 +114,14 @@ impl ProxyConfig {
         self.tavily_api_keys.is_empty() != self.tavily_upstream_base_url.is_empty()
     }
 
+    fn exa_enabled(&self) -> bool {
+        !self.exa_api_keys.is_empty() && !self.exa_upstream_base_url.is_empty()
+    }
+
+    fn exa_partially_configured(&self) -> bool {
+        self.exa_api_keys.is_empty() != self.exa_upstream_base_url.is_empty()
+    }
+
     fn normalized(mut self) -> Self {
         self.proxy_token = self.proxy_token.trim().to_string();
         self.upstream_base_url = self
@@ -119,6 +137,12 @@ impl ProxyConfig {
         self.host = self.host.trim().to_string();
         self.firecrawl_api_keys = split_and_dedupe_keys(&self.firecrawl_api_keys);
         self.tavily_api_keys = split_and_dedupe_keys(&self.tavily_api_keys);
+        self.exa_api_keys = split_and_dedupe_keys(&self.exa_api_keys);
+        self.exa_upstream_base_url = self
+            .exa_upstream_base_url
+            .trim()
+            .trim_end_matches('/')
+            .to_string();
         self
     }
 
@@ -135,8 +159,8 @@ impl ProxyConfig {
         if self.host.is_empty() {
             return Err("HOST cannot be empty".to_string());
         }
-        if self.port == self.tavily_port {
-            return Err("PORT and TAVILY_PORT must be different".to_string());
+        if self.port == self.tavily_port || self.port == self.exa_port || self.tavily_port == self.exa_port {
+            return Err("PORT, TAVILY_PORT, and EXA_PORT must all be different".to_string());
         }
         Ok(())
     }
@@ -154,9 +178,15 @@ impl ProxyConfig {
                     .to_string(),
             );
         }
-        if !self.firecrawl_enabled() && !self.tavily_enabled() {
+        if self.exa_partially_configured() {
             return Err(
-                "At least one provider must be fully configured (Firecrawl or Tavily)".to_string(),
+                "Exa config is incomplete: EXA_API_KEYS and EXA_UPSTREAM_BASE_URL must both be set"
+                    .to_string(),
+            );
+        }
+        if !self.firecrawl_enabled() && !self.tavily_enabled() && !self.exa_enabled() {
+            return Err(
+                "At least one provider must be fully configured (Firecrawl, Tavily, or Exa)".to_string(),
             );
         }
         Ok(())
@@ -173,6 +203,10 @@ impl ProxyConfig {
 
     fn tavily_listen_url(&self) -> String {
         format!("http://{}:{}", self.host, self.tavily_port)
+    }
+
+    fn exa_listen_url(&self) -> String {
+        format!("http://{}:{}", self.host, self.exa_port)
     }
 }
 
@@ -228,14 +262,17 @@ fn derive_status_flags(
     config: &ProxyConfig,
     firecrawl_running: bool,
     tavily_running: bool,
-) -> (bool, bool, bool, bool, bool) {
+    exa_running: bool,
+) -> (bool, bool, bool, bool, bool, bool) {
     let firecrawl_enabled = config.firecrawl_enabled();
     let tavily_enabled = config.tavily_enabled();
+    let exa_enabled = config.exa_enabled();
 
-    let enabled_count = firecrawl_enabled as usize + tavily_enabled as usize;
+    let enabled_count = firecrawl_enabled as usize + tavily_enabled as usize + exa_enabled as usize;
     let running_enabled_count = (firecrawl_enabled && firecrawl_running) as usize
-        + (tavily_enabled && tavily_running) as usize;
-    let any_running = firecrawl_running || tavily_running;
+        + (tavily_enabled && tavily_running) as usize
+        + (exa_enabled && exa_running) as usize;
+    let any_running = firecrawl_running || tavily_running || exa_running;
     let running = enabled_count > 0 && running_enabled_count == enabled_count;
     let degraded = any_running && !running;
 
@@ -245,6 +282,7 @@ fn derive_status_flags(
         degraded,
         firecrawl_enabled,
         tavily_enabled,
+        exa_enabled,
     )
 }
 
@@ -260,12 +298,14 @@ struct AppState {
 struct ProxyRuntime {
     firecrawl_handle: Option<ServerHandle>,
     tavily_handle: Option<ServerHandle>,
+    exa_handle: Option<ServerHandle>,
 }
 
 #[derive(Default)]
 struct ActiveKeyManagers {
     firecrawl: Option<Arc<Mutex<RoundRobinKeyManager>>>,
     tavily: Option<Arc<Mutex<RoundRobinKeyManager>>>,
+    exa: Option<Arc<Mutex<RoundRobinKeyManager>>>,
 }
 
 struct ServerHandle {
@@ -282,10 +322,13 @@ struct ProxyStatus {
     degraded: bool,
     listen_url: Option<String>,
     tavily_listen_url: Option<String>,
+    exa_listen_url: Option<String>,
     firecrawl_enabled: bool,
     tavily_enabled: bool,
+    exa_enabled: bool,
     firecrawl_running: bool,
     tavily_running: bool,
+    exa_running: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -301,6 +344,7 @@ struct ProviderKeyStatusSnapshot {
 struct KeyStatusSnapshot {
     firecrawl: ProviderKeyStatusSnapshot,
     tavily: ProviderKeyStatusSnapshot,
+    exa: ProviderKeyStatusSnapshot,
 }
 
 #[derive(Clone)]
@@ -449,6 +493,19 @@ fn tavily_local_mcp_script_path(app: &tauri::AppHandle) -> Result<PathBuf, Strin
     Ok(app_data_dir.join(TAVILY_LOCAL_MCP_SCRIPT_FILENAME))
 }
 
+const EXA_LOCAL_MCP_SCRIPT_FILENAME: &str = "exa-local-proxy-mcp.mjs";
+const EXA_LOCAL_MCP_SCRIPT: &str = include_str!("../mcp/exa-local-proxy-mcp.mjs");
+
+fn exa_local_mcp_script_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("Failed to resolve app data dir: {}", e))?;
+    fs::create_dir_all(&app_data_dir)
+        .map_err(|e| format!("Failed to create app data dir: {}", e))?;
+    Ok(app_data_dir.join(EXA_LOCAL_MCP_SCRIPT_FILENAME))
+}
+
 fn ensure_tavily_local_mcp_launcher(
     app: &tauri::AppHandle,
 ) -> Result<TavilyMcpLaunchConfig, String> {
@@ -476,6 +533,44 @@ fn ensure_tavily_local_mcp_launcher(
     }
 
     Ok(TavilyMcpLaunchConfig {
+        command: "node".to_string(),
+        args: vec![script_path.to_string_lossy().to_string()],
+    })
+}
+
+#[derive(Debug, Clone)]
+struct ExaMcpLaunchConfig {
+    command: String,
+    args: Vec<String>,
+}
+
+fn ensure_exa_local_mcp_launcher(
+    app: &tauri::AppHandle,
+) -> Result<ExaMcpLaunchConfig, String> {
+    let script_path = exa_local_mcp_script_path(app)?;
+    let should_write = match fs::read_to_string(&script_path) {
+        Ok(existing) => existing != EXA_LOCAL_MCP_SCRIPT,
+        Err(err) if err.kind() == ErrorKind::NotFound => true,
+        Err(err) => {
+            return Err(format!(
+                "Failed to read Exa MCP script {}: {}",
+                script_path.to_string_lossy(),
+                err
+            ))
+        }
+    };
+
+    if should_write {
+        fs::write(&script_path, EXA_LOCAL_MCP_SCRIPT).map_err(|e| {
+            format!(
+                "Failed to write Exa MCP script {}: {}",
+                script_path.to_string_lossy(),
+                e
+            )
+        })?;
+    }
+
+    Ok(ExaMcpLaunchConfig {
         command: "node".to_string(),
         args: vec![script_path.to_string_lossy().to_string()],
     })
@@ -512,6 +607,14 @@ fn build_tavily_router(state: ProxyServerState) -> Router {
         .route("/health", get(health))
         .route("/", any(proxy_tavily_root))
         .route("/*path", any(proxy_tavily_path))
+        .with_state(state)
+}
+
+fn build_exa_router(state: ProxyServerState) -> Router {
+    Router::new()
+        .route("/health", get(health))
+        .route("/", any(proxy_exa_root))
+        .route("/*path", any(proxy_exa_path))
         .with_state(state)
 }
 
@@ -636,6 +739,45 @@ async fn proxy_tavily_path(
     .await
 }
 
+async fn proxy_exa_root(
+    State(state): State<ProxyServerState>,
+    method: Method,
+    uri: Uri,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    let target_url = build_raw_target_url(&state.upstream_base_url, "", uri.query());
+    proxy_request_to_target(
+        state,
+        method,
+        uri.path().to_string(),
+        headers,
+        body,
+        target_url,
+    )
+    .await
+}
+
+async fn proxy_exa_path(
+    State(state): State<ProxyServerState>,
+    Path(path): Path<String>,
+    method: Method,
+    uri: Uri,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    let target_url = build_raw_target_url(&state.upstream_base_url, &path, uri.query());
+    proxy_request_to_target(
+        state,
+        method,
+        uri.path().to_string(),
+        headers,
+        body,
+        target_url,
+    )
+    .await
+}
+
 fn is_authorized(headers: &HeaderMap, expected_token: &str) -> bool {
     let Some(auth) = headers.get("authorization") else {
         return false;
@@ -705,7 +847,7 @@ fn sanitize_request_headers(
     let auth_value = HeaderValue::from_str(&format!("Bearer {}", selected_key))
         .map_err(|_| "Invalid selected API key".to_string())?;
     sanitized.insert("authorization", auth_value);
-    if provider.eq_ignore_ascii_case("tavily") {
+    if provider.eq_ignore_ascii_case("tavily") || provider.eq_ignore_ascii_case("exa") {
         let api_key_value = HeaderValue::from_str(selected_key)
             .map_err(|_| "Invalid selected API key".to_string())?;
         sanitized.insert("x-api-key", api_key_value);
@@ -905,10 +1047,12 @@ fn compose_proxy_status(runtime: &ProxyRuntime, config: &ProxyConfig) -> ProxySt
         .as_ref()
         .map(|h| h.listen_url.clone());
     let tavily_listen_url = runtime.tavily_handle.as_ref().map(|h| h.listen_url.clone());
+    let exa_listen_url = runtime.exa_handle.as_ref().map(|h| h.listen_url.clone());
     let firecrawl_running = firecrawl_listen_url.is_some();
     let tavily_running = tavily_listen_url.is_some();
-    let (running, any_running, degraded, firecrawl_enabled, tavily_enabled) =
-        derive_status_flags(config, firecrawl_running, tavily_running);
+    let exa_running = exa_listen_url.is_some();
+    let (running, any_running, degraded, firecrawl_enabled, tavily_enabled, exa_enabled) =
+        derive_status_flags(config, firecrawl_running, tavily_running, exa_running);
 
     ProxyStatus {
         running,
@@ -916,10 +1060,13 @@ fn compose_proxy_status(runtime: &ProxyRuntime, config: &ProxyConfig) -> ProxySt
         degraded,
         listen_url: firecrawl_listen_url,
         tavily_listen_url,
+        exa_listen_url,
         firecrawl_enabled,
         tavily_enabled,
+        exa_enabled,
         firecrawl_running,
         tavily_running,
+        exa_running,
     }
 }
 
@@ -932,20 +1079,26 @@ async fn get_proxy_status(state: tauri::State<'_, AppState>) -> Result<ProxyStat
 
 #[tauri::command]
 async fn start_proxy(state: tauri::State<'_, AppState>) -> Result<ProxyStatus, String> {
+    start_proxy_internal(&state).await
+}
+
+async fn start_proxy_internal(state: &AppState) -> Result<ProxyStatus, String> {
     let config = state.config.read().await.clone();
     config.validate()?;
     let firecrawl_enabled = config.firecrawl_enabled();
     let tavily_enabled = config.tavily_enabled();
+    let exa_enabled = config.exa_enabled();
 
-    let (start_firecrawl, start_tavily) = {
+    let (start_firecrawl, start_tavily, start_exa) = {
         let runtime = state.runtime.lock().await;
         (
             firecrawl_enabled && runtime.firecrawl_handle.is_none(),
             tavily_enabled && runtime.tavily_handle.is_none(),
+            exa_enabled && runtime.exa_handle.is_none(),
         )
     };
 
-    if !start_firecrawl && !start_tavily {
+    if !start_firecrawl && !start_tavily && !start_exa {
         let runtime = state.runtime.lock().await;
         return Ok(compose_proxy_status(&runtime, &config));
     }
@@ -957,8 +1110,10 @@ async fn start_proxy(state: tauri::State<'_, AppState>) -> Result<ProxyStatus, S
 
     let mut new_firecrawl_handle: Option<ServerHandle> = None;
     let mut new_tavily_handle: Option<ServerHandle> = None;
+    let mut new_exa_handle: Option<ServerHandle> = None;
     let mut new_firecrawl_manager: Option<Arc<Mutex<RoundRobinKeyManager>>> = None;
     let mut new_tavily_manager: Option<Arc<Mutex<RoundRobinKeyManager>>> = None;
+    let mut new_exa_manager: Option<Arc<Mutex<RoundRobinKeyManager>>> = None;
 
     if start_firecrawl {
         let firecrawl_addr: SocketAddr = format!("{}:{}", config.host, config.port)
@@ -1071,6 +1226,61 @@ async fn start_proxy(state: tauri::State<'_, AppState>) -> Result<ProxyStatus, S
         });
     }
 
+    if start_exa {
+        let exa_addr: SocketAddr = format!("{}:{}", config.host, config.exa_port)
+            .parse()
+            .map_err(|e| format!("Invalid HOST/EXA_PORT: {}", e))?;
+        let exa_listener = TcpListener::bind(exa_addr)
+            .await
+            .map_err(|e| format!("Failed to bind {}: {}", config.exa_listen_url(), e))?;
+        let exa_local_addr = exa_listener
+            .local_addr()
+            .map_err(|e| format!("Failed to resolve exa local addr: {}", e))?;
+        let exa_listen_url = format!("http://{}", exa_local_addr);
+
+        let exa_key_manager = Arc::new(Mutex::new(RoundRobinKeyManager::new(
+            config.exa_api_keys.clone(),
+            config.key_cooldown_seconds,
+        )));
+        new_exa_manager = Some(exa_key_manager.clone());
+
+        let exa_state = ProxyServerState {
+            provider: "exa",
+            proxy_token: config.proxy_token.clone(),
+            upstream_base_url: config.exa_upstream_base_url.clone(),
+            key_manager: exa_key_manager,
+            http_client: http_client.clone(),
+            logs: state.logs.clone(),
+        };
+        let exa_router = build_exa_router(exa_state);
+        let (exa_shutdown_tx, exa_shutdown_rx) = oneshot::channel::<()>();
+
+        append_log(
+            &state.logs,
+            "INFO",
+            format!("Exa proxy starting at {}", exa_listen_url),
+        )
+        .await;
+
+        let logs = state.logs.clone();
+        let exa_join_handle = tauri::async_runtime::spawn(async move {
+            let server =
+                axum::serve(exa_listener, exa_router).with_graceful_shutdown(async move {
+                    let _ = exa_shutdown_rx.await;
+                });
+
+            if let Err(err) = server.await {
+                append_log(&logs, "ERROR", format!("Exa proxy crashed: {}", err)).await;
+            }
+        });
+
+        new_exa_handle = Some(ServerHandle {
+            shutdown_tx: Some(exa_shutdown_tx),
+            join_handle: exa_join_handle,
+            listen_url: exa_listen_url,
+        });
+    }
+
     let status = {
         let mut runtime = state.runtime.lock().await;
         if let Some(handle) = new_firecrawl_handle {
@@ -1078,6 +1288,9 @@ async fn start_proxy(state: tauri::State<'_, AppState>) -> Result<ProxyStatus, S
         }
         if let Some(handle) = new_tavily_handle {
             runtime.tavily_handle = Some(handle);
+        }
+        if let Some(handle) = new_exa_handle {
+            runtime.exa_handle = Some(handle);
         }
         compose_proxy_status(&runtime, &config)
     };
@@ -1095,6 +1308,12 @@ async fn start_proxy(state: tauri::State<'_, AppState>) -> Result<ProxyStatus, S
         } else if !tavily_enabled {
             active.tavily = None;
         }
+
+        if let Some(manager) = new_exa_manager {
+            active.exa = Some(manager);
+        } else if !exa_enabled {
+            active.exa = None;
+        }
     }
 
     Ok(status)
@@ -1103,15 +1322,16 @@ async fn start_proxy(state: tauri::State<'_, AppState>) -> Result<ProxyStatus, S
 #[tauri::command]
 async fn stop_proxy(state: tauri::State<'_, AppState>) -> Result<ProxyStatus, String> {
     let config = state.config.read().await.clone();
-    let (firecrawl_handle, tavily_handle) = {
+    let (firecrawl_handle, tavily_handle, exa_handle) = {
         let mut runtime = state.runtime.lock().await;
         (
             runtime.firecrawl_handle.take(),
             runtime.tavily_handle.take(),
+            runtime.exa_handle.take(),
         )
     };
 
-    if firecrawl_handle.is_none() && tavily_handle.is_none() {
+    if firecrawl_handle.is_none() && tavily_handle.is_none() && exa_handle.is_none() {
         let runtime = state.runtime.lock().await;
         return Ok(compose_proxy_status(&runtime, &config));
     }
@@ -1130,11 +1350,19 @@ async fn stop_proxy(state: tauri::State<'_, AppState>) -> Result<ProxyStatus, St
         let _ = handle.join_handle.await;
     }
 
+    if let Some(mut handle) = exa_handle {
+        if let Some(shutdown_tx) = handle.shutdown_tx.take() {
+            let _ = shutdown_tx.send(());
+        }
+        let _ = handle.join_handle.await;
+    }
+
     // Clear active key manager references
     {
         let mut active = state.active_key_managers.lock().await;
         active.firecrawl = None;
         active.tavily = None;
+        active.exa = None;
     }
 
     append_log(&state.logs, "INFO", "All proxies stopped".to_string()).await;
@@ -1171,18 +1399,20 @@ async fn build_key_status_snapshot_inner(state: &AppState) -> KeyStatusSnapshot 
     let config = state.config.read().await.clone();
     let firecrawl_configured = config.firecrawl_enabled();
     let tavily_configured = config.tavily_enabled();
+    let exa_configured = config.exa_enabled();
 
-    let (firecrawl_running, tavily_running) = {
+    let (firecrawl_running, tavily_running, exa_running) = {
         let runtime = state.runtime.lock().await;
         (
             runtime.firecrawl_handle.is_some(),
             runtime.tavily_handle.is_some(),
+            runtime.exa_handle.is_some(),
         )
     };
 
-    let (active_firecrawl, active_tavily) = {
+    let (active_firecrawl, active_tavily, active_exa) = {
         let active = state.active_key_managers.lock().await;
-        (active.firecrawl.clone(), active.tavily.clone())
+        (active.firecrawl.clone(), active.tavily.clone(), active.exa.clone())
     };
 
     let firecrawl = build_provider_key_status(
@@ -1199,8 +1429,15 @@ async fn build_key_status_snapshot_inner(state: &AppState) -> KeyStatusSnapshot 
         active_tavily,
     )
     .await;
+    let exa = build_provider_key_status(
+        exa_configured,
+        exa_running,
+        &config.exa_api_keys,
+        active_exa,
+    )
+    .await;
 
-    KeyStatusSnapshot { firecrawl, tavily }
+    KeyStatusSnapshot { firecrawl, tavily, exa }
 }
 
 #[tauri::command]
@@ -1228,13 +1465,19 @@ async fn build_mcp_config(
     } else {
         None
     };
+    let exa_launcher = if config.exa_enabled() {
+        Some(ensure_exa_local_mcp_launcher(&app)?)
+    } else {
+        None
+    };
     let payload = build_mcp_payload(
         &config,
         target
-            .unwrap_or_else(|| "both".to_string())
+            .unwrap_or_else(|| "all".to_string())
             .to_ascii_lowercase()
             .as_str(),
         tavily_launcher.as_ref(),
+        exa_launcher.as_ref(),
     )?;
 
     serde_json::to_string_pretty(&payload)
@@ -1256,21 +1499,38 @@ fn build_tavily_mcp_server(
     })
 }
 
+fn build_exa_mcp_server(
+    config: &ProxyConfig,
+    proxy_token: &str,
+    launcher: &ExaMcpLaunchConfig,
+) -> serde_json::Value {
+    json!({
+      "command": launcher.command,
+      "args": launcher.args,
+      "env": {
+        "EXA_API_URL": config.exa_listen_url(),
+        "EXA_API_KEY": proxy_token
+      }
+    })
+}
+
 fn build_mcp_payload(
     config: &ProxyConfig,
     target: &str,
     tavily_launcher: Option<&TavilyMcpLaunchConfig>,
+    exa_launcher: Option<&ExaMcpLaunchConfig>,
 ) -> Result<serde_json::Value, String> {
     config.validate_common()?;
     config.validate_provider_completeness()?;
 
     let firecrawl_enabled = config.firecrawl_enabled();
     let tavily_enabled = config.tavily_enabled();
+    let exa_enabled = config.exa_enabled();
     let proxy_token = config.proxy_token.clone();
     let mut servers = serde_json::Map::new();
 
     match target {
-        "both" => {
+        "both" | "all" => {
             if firecrawl_enabled {
                 servers.insert(
                     "firecrawl".to_string(),
@@ -1290,6 +1550,14 @@ fn build_mcp_payload(
                 servers.insert(
                     "tavily".to_string(),
                     build_tavily_mcp_server(config, &proxy_token, launcher),
+                );
+            }
+            if exa_enabled {
+                let launcher = exa_launcher
+                    .ok_or_else(|| "Exa MCP launcher is not ready".to_string())?;
+                servers.insert(
+                    "exa".to_string(),
+                    build_exa_mcp_server(config, &proxy_token, launcher),
                 );
             }
         }
@@ -1320,7 +1588,18 @@ fn build_mcp_payload(
                 build_tavily_mcp_server(config, &proxy_token, launcher),
             );
         }
-        _ => return Err("Invalid MCP target, expected firecrawl/tavily/both".to_string()),
+        "exa" => {
+            if !exa_enabled {
+                return Err("Exa is not fully configured".to_string());
+            }
+            let launcher =
+                exa_launcher.ok_or_else(|| "Exa MCP launcher is not ready".to_string())?;
+            servers.insert(
+                "exa".to_string(),
+                build_exa_mcp_server(config, &proxy_token, launcher),
+            );
+        }
+        _ => return Err("Invalid MCP target, expected firecrawl/tavily/exa/all".to_string()),
     }
 
     if servers.is_empty() {
@@ -1365,11 +1644,16 @@ mod tests {
             upstream_base_url: String::new(),
             tavily_api_keys: Vec::new(),
             tavily_upstream_base_url: String::new(),
+            exa_api_keys: Vec::new(),
+            exa_upstream_base_url: String::new(),
             request_timeout_ms: 60_000,
             key_cooldown_seconds: 60,
+            auto_start: true,
+            silent_start: false,
             host: "127.0.0.1".to_string(),
             port: 8787,
             tavily_port: 8788,
+            exa_port: 8789,
         }
     }
 
@@ -1408,7 +1692,7 @@ mod tests {
         config.firecrawl_api_keys = vec!["fc-key-1".to_string()];
         config.upstream_base_url = "https://api.firecrawl.dev".to_string();
 
-        let payload = build_mcp_payload(&config, "both", None).expect("mcp payload should build");
+        let payload = build_mcp_payload(&config, "both", None, None).expect("mcp payload should build");
         let servers = payload
             .get("mcpServers")
             .and_then(|v| v.as_object())
@@ -1424,7 +1708,7 @@ mod tests {
         config.firecrawl_api_keys = vec!["fc-key-1".to_string()];
         config.upstream_base_url = "https://api.firecrawl.dev".to_string();
 
-        let err = build_mcp_payload(&config, "tavily", None)
+        let err = build_mcp_payload(&config, "tavily", None, None)
             .expect_err("tavily target should fail when not configured");
         assert!(err.contains("Tavily is not fully configured"));
     }
@@ -1436,7 +1720,7 @@ mod tests {
         config.tavily_upstream_base_url = "https://api.tavily.com".to_string();
 
         let launcher = tavily_launcher();
-        let payload = build_mcp_payload(&config, "tavily", Some(&launcher))
+        let payload = build_mcp_payload(&config, "tavily", Some(&launcher), None)
             .expect("tavily payload should build");
         let tavily = payload
             .get("mcpServers")
@@ -1475,7 +1759,7 @@ mod tests {
         config.tavily_api_keys = vec!["tvly-key-1".to_string()];
         config.tavily_upstream_base_url = "https://api.tavily.com".to_string();
 
-        let err = build_mcp_payload(&config, "tavily", None)
+        let err = build_mcp_payload(&config, "tavily", None, None)
             .expect_err("tavily payload should require local launcher");
         assert!(err.contains("launcher"));
     }
@@ -1488,14 +1772,14 @@ mod tests {
         config.tavily_api_keys = vec!["tvly-key-1".to_string()];
         config.tavily_upstream_base_url = "https://api.tavily.com".to_string();
 
-        let all_running = derive_status_flags(&config, true, true);
-        assert_eq!(all_running, (true, true, false, true, true));
+        let all_running = derive_status_flags(&config, true, true, false);
+        assert_eq!(all_running, (true, true, false, true, true, false));
 
-        let degraded = derive_status_flags(&config, true, false);
-        assert_eq!(degraded, (false, true, true, true, true));
+        let degraded = derive_status_flags(&config, true, false, false);
+        assert_eq!(degraded, (false, true, true, true, true, false));
 
-        let all_stopped = derive_status_flags(&config, false, false);
-        assert_eq!(all_stopped, (false, false, false, true, true));
+        let all_stopped = derive_status_flags(&config, false, false, false);
+        assert_eq!(all_stopped, (false, false, false, true, true, false));
     }
 }
 
@@ -1543,23 +1827,52 @@ pub fn run() {
                 now_ts()
             ));
 
-            app.manage(AppState {
-                config: Arc::new(RwLock::new(config)),
+            let app_state = AppState {
+                config: Arc::new(RwLock::new(config.clone())),
                 runtime: Arc::new(Mutex::new(ProxyRuntime::default())),
                 logs: Arc::new(Mutex::new(logs)),
                 active_key_managers: Arc::new(Mutex::new(ActiveKeyManagers::default())),
-            });
+            };
+
+            app.manage(app_state.clone());
+
+            // 提前为托盘后台任务 clone，避免 auto_start 闭包 move 后无法借用
+            let tray_state = app_state.clone();
+
+            if config.auto_start {
+                tauri::async_runtime::spawn(async move {
+                    if let Err(e) = start_proxy_internal(&app_state).await {
+                        println!("Failed to auto-start proxy: {}", e);
+                    }
+                });
+            }
+
+            // 静默启动：隐藏主窗口（不显示在 Dock / 任务栏）
+            if config.silent_start {
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.hide();
+                }
+                #[cfg(target_os = "macos")]
+                let _ = app.set_dock_visibility(false);
+            }
+
+            // 托盘菜单：状态项 + 常规操作
+            let status_item =
+                MenuItem::with_id(app, "tray_status", "⏹ 代理已停止", false, None::<&str>)
+                    .map_err(|e| format!("Failed to create tray status item: {}", e))?;
 
             let tray_menu = MenuBuilder::new(app)
-                .text("tray_show", "Show Window")
+                .item(&status_item)
                 .separator()
-                .text("tray_quit", "Quit")
+                .text("tray_show", "显示窗口")
+                .separator()
+                .text("tray_quit", "退出")
                 .build()
                 .map_err(|e| format!("Failed to build tray menu: {}", e))?;
 
             let mut tray = TrayIconBuilder::with_id("main-tray")
                 .menu(&tray_menu)
-                .tooltip("Balance Proxy")
+                .tooltip("Balance Proxy - 代理已停止")
                 .show_menu_on_left_click(true);
 
             if let Some(icon) = app.default_window_icon().cloned() {
@@ -1567,7 +1880,47 @@ pub fn run() {
             }
 
             tray.build(app)
-                .map_err(|e| format!("Failed to create tray icon: {}", e))?;
+            .map_err(|e| format!("Failed to create tray icon: {}", e))?;
+
+            // 后台定时刷新托盘状态
+            let tray_app = app.handle().clone();
+            let status_item_bg = status_item.clone();
+            tauri::async_runtime::spawn(async move {
+                loop {
+                    tokio::time::sleep(Duration::from_secs(3)).await;
+
+                    let config = tray_state.config.read().await.clone();
+                    let runtime = tray_state.runtime.lock().await;
+                    let status = compose_proxy_status(&runtime, &config);
+                    drop(runtime);
+
+                    let (label, tooltip) = if status.running {
+                        let urls: Vec<String> = [
+                            status.listen_url.as_deref().map(|u| format!("FC {}", u.trim_start_matches("http://"))),
+                            status.tavily_listen_url.as_deref().map(|u| format!("TV {}", u.trim_start_matches("http://"))),
+                            status.exa_listen_url.as_deref().map(|u| format!("EXA {}", u.trim_start_matches("http://"))),
+                        ]
+                        .into_iter()
+                        .flatten()
+                        .collect();
+                        let url_str = urls.join(" | ");
+                        (
+                            format!("🟢 运行中"),
+                            format!("Balance Proxy - 运行中\n{}", url_str),
+                        )
+                    } else if status.any_running {
+                        ("🟡 部分运行".to_string(), "Balance Proxy - 部分运行".to_string())
+                    } else {
+                        ("⏹ 代理已停止".to_string(), "Balance Proxy - 代理已停止".to_string())
+                    };
+
+                    let _ = status_item_bg.set_text(&label);
+                    if let Some(t) = tray_app.tray_by_id("main-tray") {
+                        let _ = t.set_tooltip(Some(tooltip.as_str()));
+                    }
+                }
+            });
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
