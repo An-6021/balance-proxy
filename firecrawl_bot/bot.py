@@ -22,11 +22,11 @@ POST_POPUP_CLOSE_WAIT_S = 0.2
 POST_SHOW_KEY_WAIT_S = 0.5
 
 
-def run_registration():
+def run_registration(mail_factory=MailTM):
     api_key = None
     with sync_playwright() as p:
-        # Initialize Mail.tm
-        mail = MailTM()
+        # Initialize temp email API
+        mail = mail_factory()
         if not mail.create_account():
             print("Failed to create temporary email.")
             return

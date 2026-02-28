@@ -85,6 +85,24 @@ def main():
     if not check_env():
         return
 
+    print("\n\033[1mSelect Email Provider\033[0m")
+    print("1. mail.tm (default)")
+    print("2. DuckMail (https://api.duckmail.sbs)")
+
+    email_choice = input("\nSelect email provider (1/2, default 1): ").strip()
+    mail_factory_kwargs = {}
+    if email_choice == "2":
+        from duckmail_utils import DuckMail
+
+        duckmail_api_key = (os.environ.get("DUCKMAIL_API_KEY") or "").strip()
+        if not duckmail_api_key:
+            duckmail_api_key = input("DuckMail API key (optional, press Enter to skip): ").strip()
+
+        if duckmail_api_key:
+            mail_factory_kwargs["mail_factory"] = lambda: DuckMail(api_key=duckmail_api_key)
+        else:
+            mail_factory_kwargs["mail_factory"] = DuckMail
+
     print("\n\033[1mWelcome to Multi-Bot Registration\033[0m")
     print("1. Firecrawl")
     print("2. Tavily")
@@ -94,15 +112,15 @@ def main():
     if choice == "2":
         from tavily_reg import run_registration as run_tavily
         bot_name = "Tavily"
-        run_func = lambda: run_tavily(headless=False)
+        run_func = lambda: run_tavily(headless=False, **mail_factory_kwargs)
     elif choice == "3":
         from exa_reg import run_registration as run_exa
         bot_name = "Exa"
-        run_func = lambda: run_exa(headless=False)
+        run_func = lambda: run_exa(headless=False, **mail_factory_kwargs)
     else:
         from firecrawl_reg import run_registration as run_firecrawl
         bot_name = "Firecrawl"
-        run_func = run_firecrawl
+        run_func = lambda: run_firecrawl(**mail_factory_kwargs)
 
     output_files = BOT_OUTPUT_FILES[bot_name]
 

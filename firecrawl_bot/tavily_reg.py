@@ -111,10 +111,10 @@ def solve_captcha(page):
         print(f"[-] 提取验证码失败: {e}")
     return None
 
-def run_registration(headless=False):
+def run_registration(headless=False, mail_factory=MailTM):
     with sync_playwright() as p:
-        # 1. Initialize Mail.tm API
-        mail = MailTM()
+        # 1. Initialize temp email API
+        mail = mail_factory()
         if not mail.create_account():
             print("Failed to create temporary email.")
             return None

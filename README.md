@@ -104,6 +104,8 @@ python3 -m playwright install chromium
 python3 cli.py
 ```
 
+CLI 会提示选择临时邮箱服务：`mail.tm`（默认）或 `DuckMail`（可选，支持通过环境变量 `DUCKMAIL_API_KEY` 提供可选 API key）。
+
 产出文件（本地使用，不提交 Git）：
 - `firecrawl_accounts.txt`
 - `firecrawl_keys.txt`
