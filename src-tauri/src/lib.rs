@@ -3,6 +3,7 @@ use std::fs;
 use std::io::ErrorKind;
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -514,6 +515,11 @@ fn key_health_has_usage_metrics(entry: &KeyHealthEntry) -> bool {
         && (entry.usage_used.is_some()
             || entry.usage_limit.is_some()
             || entry.usage_remaining.is_some())
+}
+
+fn key_health_usage_is_fresh(entry: &KeyHealthEntry, now: u64) -> bool {
+    let fetched_at = entry.usage_fetched_at.unwrap_or(0);
+    fetched_at > 0 && now.saturating_sub(fetched_at) < USAGE_CACHE_TTL_SECS
 }
 
 fn key_health_usage_cooldown_remaining_secs(entry: &KeyHealthEntry, now: u64) -> Option<u64> {
@@ -2751,7 +2757,7 @@ fn schedule_provider_usage_retry(
                 if keys.is_empty() {
                     return;
                 }
-                fetch_firecrawl_usage_for_keys(&state, &config, &keys).await
+                fetch_firecrawl_usage_for_keys(&state, &config, &keys, false).await
             }
             "tavily" => {
                 if !config.tavily_enabled() {
@@ -2761,7 +2767,7 @@ fn schedule_provider_usage_retry(
                 if keys.is_empty() {
                     return;
                 }
-                fetch_tavily_usage_for_keys(&state, &config, &keys).await
+                fetch_tavily_usage_for_keys(&state, &config, &keys, false).await
             }
             "exa" => {
                 if !config.exa_enabled() {
@@ -3422,6 +3428,7 @@ async fn fetch_firecrawl_usage_for_keys(
     state: &AppState,
     config: &ProxyConfig,
     keys: &[String],
+    force_refresh: bool,
 ) -> ProviderUsageSnapshot {
     if keys.is_empty() {
         return ProviderUsageSnapshot::no_enabled_key();
@@ -3449,7 +3456,7 @@ async fn fetch_firecrawl_usage_for_keys(
         let Some(entry) = provider_health.get(key) else {
             continue;
         };
-        if !key_health_has_usage_metrics(entry) {
+        if force_refresh || !key_health_has_usage_metrics(entry) || !key_health_usage_is_fresh(entry, now) {
             continue;
         }
         verified_keys.insert(key.as_str());
@@ -3733,6 +3740,7 @@ async fn fetch_tavily_usage_for_keys(
     state: &AppState,
     config: &ProxyConfig,
     keys: &[String],
+    force_refresh: bool,
 ) -> ProviderUsageSnapshot {
     if keys.is_empty() {
         return ProviderUsageSnapshot::no_enabled_key();
@@ -3761,7 +3769,7 @@ async fn fetch_tavily_usage_for_keys(
         let Some(entry) = provider_health.get(key) else {
             continue;
         };
-        if !key_health_has_usage_metrics(entry) {
+        if force_refresh || !key_health_has_usage_metrics(entry) || !key_health_usage_is_fresh(entry, now) {
             continue;
         }
         verified_keys.insert(key.as_str());
@@ -4065,7 +4073,7 @@ async fn get_usage_snapshot(state: tauri::State<'_, AppState>) -> Result<UsageSn
         cached_firecrawl.unwrap()
     } else {
         refreshed_any = true;
-        fetch_firecrawl_usage_for_keys(state.inner(), &config, &firecrawl_keys).await
+        fetch_firecrawl_usage_for_keys(state.inner(), &config, &firecrawl_keys, false).await
     };
 
     let tavily = if !config.tavily_enabled() {
@@ -4079,7 +4087,7 @@ async fn get_usage_snapshot(state: tauri::State<'_, AppState>) -> Result<UsageSn
         cached_tavily.unwrap()
     } else {
         refreshed_any = true;
-        fetch_tavily_usage_for_keys(state.inner(), &config, &tavily_keys).await
+        fetch_tavily_usage_for_keys(state.inner(), &config, &tavily_keys, false).await
     };
 
     let exa = if !config.exa_enabled() {
@@ -4112,10 +4120,12 @@ async fn get_usage_snapshot(state: tauri::State<'_, AppState>) -> Result<UsageSn
 async fn get_provider_usage(
     state: tauri::State<'_, AppState>,
     provider: String,
+    force: Option<bool>,
 ) -> Result<ProviderUsageSnapshot, String> {
     let provider = provider.to_ascii_lowercase();
     let config = state.config.read().await.clone();
     let now = now_ts();
+    let force = force.unwrap_or(false);
     let cached = state.usage_cache.read().await.clone();
     let snapshot = match provider.as_str() {
         "firecrawl" => {
@@ -4126,13 +4136,15 @@ async fn get_provider_usage(
             if keys.is_empty() {
                 return Ok(ProviderUsageSnapshot::no_enabled_key());
             }
-            if let Some(hit) = cached
-                .as_ref()
-                .and_then(|v| cached_provider_usage_if_fresh(v, "firecrawl", now))
-            {
-                return Ok(hit);
+            if !force {
+                if let Some(hit) = cached
+                    .as_ref()
+                    .and_then(|v| cached_provider_usage_if_fresh(v, "firecrawl", now))
+                {
+                    return Ok(hit);
+                }
             }
-            fetch_firecrawl_usage_for_keys(state.inner(), &config, &keys).await
+            fetch_firecrawl_usage_for_keys(state.inner(), &config, &keys, force).await
         }
         "tavily" => {
             if !config.tavily_enabled() {
@@ -4142,13 +4154,15 @@ async fn get_provider_usage(
             if keys.is_empty() {
                 return Ok(ProviderUsageSnapshot::no_enabled_key());
             }
-            if let Some(hit) = cached
-                .as_ref()
-                .and_then(|v| cached_provider_usage_if_fresh(v, "tavily", now))
-            {
-                return Ok(hit);
+            if !force {
+                if let Some(hit) = cached
+                    .as_ref()
+                    .and_then(|v| cached_provider_usage_if_fresh(v, "tavily", now))
+                {
+                    return Ok(hit);
+                }
             }
-            fetch_tavily_usage_for_keys(state.inner(), &config, &keys).await
+            fetch_tavily_usage_for_keys(state.inner(), &config, &keys, force).await
         }
         "exa" => {
             if !config.exa_enabled() {
@@ -4751,7 +4765,41 @@ fn show_main_window<R: tauri::Runtime, M: Manager<R>>(manager: &M) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let silent_start_enabled = Arc::new(AtomicBool::new(false));
+    let silent_start_applied = Arc::new(AtomicBool::new(false));
+    let main_page_load_started = Arc::new(AtomicBool::new(false));
+
+    let silent_start_enabled_for_page = silent_start_enabled.clone();
+    let silent_start_applied_for_page = silent_start_applied.clone();
+    let main_page_load_started_for_page = main_page_load_started.clone();
+
     tauri::Builder::default()
+        .on_page_load(move |webview, payload| {
+            use tauri::webview::PageLoadEvent;
+
+            let window = webview.window();
+            if window.label() != "main" {
+                return;
+            }
+
+            if payload.event() != PageLoadEvent::Started {
+                return;
+            }
+
+            main_page_load_started_for_page.store(true, Ordering::SeqCst);
+
+            if !silent_start_enabled_for_page.load(Ordering::SeqCst) {
+                return;
+            }
+
+            if silent_start_applied_for_page.swap(true, Ordering::SeqCst) {
+                return;
+            }
+
+            let _ = window.hide();
+            #[cfg(target_os = "macos")]
+            let _ = window.app_handle().set_dock_visibility(false);
+        })
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();
@@ -4762,7 +4810,31 @@ pub fn run() {
             }
         })
         .on_menu_event(|app, event| {
-            if event.id() == "tray_show" {
+            if event.id() == "tray_toggle_proxy" {
+                let app_state = match app.try_state::<AppState>() {
+                    Some(state) => state.inner().clone(),
+                    None => return,
+                };
+
+                tauri::async_runtime::spawn(async move {
+                    let should_stop = has_running_proxy(&app_state).await;
+                    let result = if should_stop {
+                        stop_proxy_internal(&app_state).await.map(|_| ())
+                    } else {
+                        start_proxy_internal(&app_state).await.map(|_| ())
+                    };
+
+                    if let Err(err) = result {
+                        let action = if should_stop { "stop" } else { "start" };
+                        append_log(
+                            &app_state.logs,
+                            "ERROR",
+                            format!("Tray failed to {} proxy: {}", action, err),
+                        )
+                        .await;
+                    }
+                });
+            } else if event.id() == "tray_show" {
                 show_main_window(app);
             } else if event.id() == "tray_quit" {
                 app.exit(0);
@@ -4774,144 +4846,173 @@ pub fn run() {
         ))
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_opener::init())
-        .setup(|app| {
-            let config = load_or_init_config(&app.handle())?;
-            let config_file_path = config_path(&app.handle())?;
-            let usage_cache_file_path = usage_cache_path(&app.handle())?;
-            let usage_cache = load_usage_cache_from_path(&usage_cache_file_path);
-            let key_health_file_path = key_health_path(&app.handle())?;
-            let key_health = load_key_health_from_path(&key_health_file_path).unwrap_or_default();
-            let exa_usage_ledger_file_path = exa_usage_ledger_path(&app.handle())?;
-            let exa_usage_ledger = load_exa_usage_ledger_from_path(&exa_usage_ledger_file_path);
-            let mut logs = VecDeque::new();
-            logs.push_back(format!(
-                "{} [INFO] App initialized. Config path is in app data directory.",
-                now_ts()
-            ));
+        .setup({
+            let silent_start_enabled = silent_start_enabled.clone();
+            let silent_start_applied = silent_start_applied.clone();
+            let main_page_load_started = main_page_load_started.clone();
 
-            let app_state = AppState {
-                config: Arc::new(RwLock::new(config.clone())),
-                config_file_path,
-                usage_cache_file_path,
-                usage_cache: Arc::new(RwLock::new(usage_cache)),
-                key_health_file_path,
-                key_health: Arc::new(RwLock::new(key_health)),
-                exa_usage_ledger_file_path,
-                exa_usage_ledger: Arc::new(RwLock::new(exa_usage_ledger)),
-                runtime: Arc::new(Mutex::new(ProxyRuntime::default())),
-                logs: Arc::new(Mutex::new(logs)),
-                metrics: Arc::new(Mutex::new(RuntimeMetrics::default())),
-                active_key_managers: Arc::new(Mutex::new(ActiveKeyManagers::default())),
-            };
+            move |app| {
+                let config = load_or_init_config(&app.handle())?;
+                let config_file_path = config_path(&app.handle())?;
+                let usage_cache_file_path = usage_cache_path(&app.handle())?;
+                let usage_cache = load_usage_cache_from_path(&usage_cache_file_path);
+                let key_health_file_path = key_health_path(&app.handle())?;
+                let key_health =
+                    load_key_health_from_path(&key_health_file_path).unwrap_or_default();
+                let exa_usage_ledger_file_path = exa_usage_ledger_path(&app.handle())?;
+                let exa_usage_ledger =
+                    load_exa_usage_ledger_from_path(&exa_usage_ledger_file_path);
+                let mut logs = VecDeque::new();
+                logs.push_back(format!(
+                    "{} [INFO] App initialized. Config path is in app data directory.",
+                    now_ts()
+                ));
 
-            app.manage(app_state.clone());
-            let sync_state = app_state.clone();
-            tauri::async_runtime::spawn(async move {
-                sync_key_health_with_config(&sync_state).await;
-                sync_exa_usage_ledger_with_config(&sync_state).await;
-            });
+                let app_state = AppState {
+                    config: Arc::new(RwLock::new(config.clone())),
+                    config_file_path,
+                    usage_cache_file_path,
+                    usage_cache: Arc::new(RwLock::new(usage_cache)),
+                    key_health_file_path,
+                    key_health: Arc::new(RwLock::new(key_health)),
+                    exa_usage_ledger_file_path,
+                    exa_usage_ledger: Arc::new(RwLock::new(exa_usage_ledger)),
+                    runtime: Arc::new(Mutex::new(ProxyRuntime::default())),
+                    logs: Arc::new(Mutex::new(logs)),
+                    metrics: Arc::new(Mutex::new(RuntimeMetrics::default())),
+                    active_key_managers: Arc::new(Mutex::new(ActiveKeyManagers::default())),
+                };
 
-            // 提前为托盘后台任务 clone，避免 auto_start 闭包 move 后无法借用
-            let tray_state = app_state.clone();
-
-            if config.auto_start {
+                app.manage(app_state.clone());
+                let sync_state = app_state.clone();
                 tauri::async_runtime::spawn(async move {
-                    if let Err(e) = start_proxy_internal(&app_state).await {
-                        println!("Failed to auto-start proxy: {}", e);
+                    sync_key_health_with_config(&sync_state).await;
+                    sync_exa_usage_ledger_with_config(&sync_state).await;
+                });
+
+                // 提前为托盘后台任务 clone，避免 auto_start 闭包 move 后无法借用
+                let tray_state = app_state.clone();
+
+                if config.auto_start {
+                    tauri::async_runtime::spawn(async move {
+                        if let Err(e) = start_proxy_internal(&app_state).await {
+                            println!("Failed to auto-start proxy: {}", e);
+                        }
+                    });
+                }
+
+                // 静默启动：避免在 WebView 首次加载前 hide 导致 macOS 白屏。
+                // 具体做法：先记录配置；等到主窗口触发 PageLoadEvent::Started 后再 hide。
+                silent_start_enabled.store(config.silent_start, Ordering::SeqCst);
+                if config.silent_start
+                    && main_page_load_started.load(Ordering::SeqCst)
+                    && !silent_start_applied.swap(true, Ordering::SeqCst)
+                {
+                    if let Some(window) = app.get_webview_window("main") {
+                        let _ = window.hide();
+                    }
+                    #[cfg(target_os = "macos")]
+                    let _ = app.set_dock_visibility(false);
+                }
+
+                // 托盘菜单：状态项 + 常规操作
+                let status_item =
+                    MenuItem::with_id(app, "tray_status", "⏹ 代理已停止", false, None::<&str>)
+                        .map_err(|e| format!("Failed to create tray status item: {}", e))?;
+
+                let toggle_item = MenuItem::with_id(
+                    app,
+                    "tray_toggle_proxy",
+                    "▶️ 启动代理",
+                    true,
+                    None::<&str>,
+                )
+                .map_err(|e| format!("Failed to create tray toggle item: {}", e))?;
+
+                let tray_menu = MenuBuilder::new(app)
+                    .item(&status_item)
+                    .item(&toggle_item)
+                    .separator()
+                    .text("tray_show", "显示窗口")
+                    .separator()
+                    .text("tray_quit", "退出")
+                    .build()
+                    .map_err(|e| format!("Failed to build tray menu: {}", e))?;
+
+                let mut tray = TrayIconBuilder::with_id("main-tray")
+                    .menu(&tray_menu)
+                    .tooltip("Balance Proxy - 代理已停止")
+                    .show_menu_on_left_click(true);
+
+                if let Some(icon) = app.default_window_icon().cloned() {
+                    tray = tray.icon(icon);
+                }
+
+                tray.build(app)
+                    .map_err(|e| format!("Failed to create tray icon: {}", e))?;
+
+                // 后台定时刷新托盘状态
+                let tray_app = app.handle().clone();
+                let status_item_bg = status_item.clone();
+                let toggle_item_bg = toggle_item.clone();
+                tauri::async_runtime::spawn(async move {
+                    loop {
+                        tokio::time::sleep(Duration::from_secs(3)).await;
+
+                        let config = tray_state.config.read().await.clone();
+                        let runtime = tray_state.runtime.lock().await;
+                        let status = compose_proxy_status(&runtime, &config);
+                        drop(runtime);
+
+                        let (label, tooltip) = if status.running {
+                            let urls: Vec<String> = [
+                                status
+                                    .listen_url
+                                    .as_deref()
+                                    .map(|u| format!("FC {}", u.trim_start_matches("http://"))),
+                                status
+                                    .tavily_listen_url
+                                    .as_deref()
+                                    .map(|u| format!("TV {}", u.trim_start_matches("http://"))),
+                                status
+                                    .exa_listen_url
+                                    .as_deref()
+                                    .map(|u| format!("EXA {}", u.trim_start_matches("http://"))),
+                            ]
+                            .into_iter()
+                            .flatten()
+                            .collect();
+                            let url_str = urls.join(" | ");
+                            (
+                                format!("🟢 运行中"),
+                                format!("Balance Proxy - 运行中\n{}", url_str),
+                            )
+                        } else if status.any_running {
+                            (
+                                "🟡 部分运行".to_string(),
+                                "Balance Proxy - 部分运行".to_string(),
+                            )
+                        } else {
+                            (
+                                "⏹ 代理已停止".to_string(),
+                                "Balance Proxy - 代理已停止".to_string(),
+                            )
+                        };
+
+                        let _ = status_item_bg.set_text(&label);
+                        let _ = toggle_item_bg.set_text(if status.any_running {
+                            "⏹ 停止代理"
+                        } else {
+                            "▶️ 启动代理"
+                        });
+                        if let Some(t) = tray_app.tray_by_id("main-tray") {
+                            let _ = t.set_tooltip(Some(tooltip.as_str()));
+                        }
                     }
                 });
+
+                Ok(())
             }
-
-            // 静默启动：隐藏主窗口（不显示在 Dock / 任务栏）
-            if config.silent_start {
-                if let Some(window) = app.get_webview_window("main") {
-                    let _ = window.hide();
-                }
-                #[cfg(target_os = "macos")]
-                let _ = app.set_dock_visibility(false);
-            }
-
-            // 托盘菜单：状态项 + 常规操作
-            let status_item =
-                MenuItem::with_id(app, "tray_status", "⏹ 代理已停止", false, None::<&str>)
-                    .map_err(|e| format!("Failed to create tray status item: {}", e))?;
-
-            let tray_menu = MenuBuilder::new(app)
-                .item(&status_item)
-                .separator()
-                .text("tray_show", "显示窗口")
-                .separator()
-                .text("tray_quit", "退出")
-                .build()
-                .map_err(|e| format!("Failed to build tray menu: {}", e))?;
-
-            let mut tray = TrayIconBuilder::with_id("main-tray")
-                .menu(&tray_menu)
-                .tooltip("Balance Proxy - 代理已停止")
-                .show_menu_on_left_click(true);
-
-            if let Some(icon) = app.default_window_icon().cloned() {
-                tray = tray.icon(icon);
-            }
-
-            tray.build(app)
-                .map_err(|e| format!("Failed to create tray icon: {}", e))?;
-
-            // 后台定时刷新托盘状态
-            let tray_app = app.handle().clone();
-            let status_item_bg = status_item.clone();
-            tauri::async_runtime::spawn(async move {
-                loop {
-                    tokio::time::sleep(Duration::from_secs(3)).await;
-
-                    let config = tray_state.config.read().await.clone();
-                    let runtime = tray_state.runtime.lock().await;
-                    let status = compose_proxy_status(&runtime, &config);
-                    drop(runtime);
-
-                    let (label, tooltip) = if status.running {
-                        let urls: Vec<String> = [
-                            status
-                                .listen_url
-                                .as_deref()
-                                .map(|u| format!("FC {}", u.trim_start_matches("http://"))),
-                            status
-                                .tavily_listen_url
-                                .as_deref()
-                                .map(|u| format!("TV {}", u.trim_start_matches("http://"))),
-                            status
-                                .exa_listen_url
-                                .as_deref()
-                                .map(|u| format!("EXA {}", u.trim_start_matches("http://"))),
-                        ]
-                        .into_iter()
-                        .flatten()
-                        .collect();
-                        let url_str = urls.join(" | ");
-                        (
-                            format!("🟢 运行中"),
-                            format!("Balance Proxy - 运行中\n{}", url_str),
-                        )
-                    } else if status.any_running {
-                        (
-                            "🟡 部分运行".to_string(),
-                            "Balance Proxy - 部分运行".to_string(),
-                        )
-                    } else {
-                        (
-                            "⏹ 代理已停止".to_string(),
-                            "Balance Proxy - 代理已停止".to_string(),
-                        )
-                    };
-
-                    let _ = status_item_bg.set_text(&label);
-                    if let Some(t) = tray_app.tray_by_id("main-tray") {
-                        let _ = t.set_tooltip(Some(tooltip.as_str()));
-                    }
-                }
-            });
-
-            Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             load_proxy_config,

@@ -97,6 +97,7 @@ const I18N = {
     "cfg.disabled": "禁用",
     "cfg.enabled": "启用",
     "cfg.addKey": "新增",
+    "cfg.addPrompt": "请输入 Key（单个或多个，逗号/换行分隔）",
     "cfg.batchAdd": "批量导入",
     "cfg.remove": "删除",
     "cfg.colKey": "Key",
@@ -168,6 +169,8 @@ const I18N = {
     // Common
     "copied": "已复制到剪贴板",
     "copyFailed": "复制失败: ",
+    "modal.ok": "确定",
+    "modal.cancel": "取消",
 
     // Units
     "unit.credits": "额度",
@@ -255,6 +258,7 @@ const I18N = {
     "cfg.disabled": "Disabled",
     "cfg.enabled": "Enabled",
     "cfg.addKey": "Add",
+    "cfg.addPrompt": "Enter key(s) (comma/newline separated)",
     "cfg.batchAdd": "Batch Import",
     "cfg.remove": "Remove",
     "cfg.colKey": "Key",
@@ -322,6 +326,8 @@ const I18N = {
 
     "copied": "Copied to clipboard",
     "copyFailed": "Copy failed: ",
+    "modal.ok": "OK",
+    "modal.cancel": "Cancel",
 
     "unit.credits": "credits",
     "unit.requests": "requests",
@@ -337,6 +343,27 @@ const I18N = {
 };
 
 let currentLang = localStorage.getItem("lang") || "zh";
+
+const STORAGE_USAGE_BASELINES_KEY = "balanceProxy.usageBaselines.v1";
+const STORAGE_METRICS_STATE_KEY = "balanceProxy.metricsState.v1";
+
+function readStorageJson(key, fallback) {
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) return fallback;
+    return JSON.parse(raw);
+  } catch {
+    return fallback;
+  }
+}
+
+function writeStorageJson(key, value) {
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+  } catch {
+    // ignore
+  }
+}
 
 function t(key, ...args) {
   let text = (I18N[currentLang] && I18N[currentLang][key]) || (I18N.en[key]) || key;
@@ -389,6 +416,186 @@ function showToast(message, type = "info") {
     el.classList.add("toast-exit");
     el.addEventListener("animationend", () => el.remove());
   }, 2500);
+}
+
+// ---- Modal dialogs (WebView-safe) ----
+let activeModal = null;
+
+function openModal({
+  title = "",
+  message = "",
+  bodyEl = null,
+  okText = null,
+  cancelText = null,
+  okClass = "btn-primary",
+  submitOnEnter = false,
+  submitOnCtrlEnter = false,
+  initialFocusEl = null,
+} = {}) {
+  if (activeModal && typeof activeModal.close === "function") {
+    activeModal.close(null);
+  }
+
+  return new Promise((resolve) => {
+    const lastFocus = document.activeElement;
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+
+    const overlay = document.createElement("div");
+    overlay.className = "modal-overlay";
+
+    const dialog = document.createElement("div");
+    dialog.className = "modal";
+    dialog.setAttribute("role", "dialog");
+    dialog.setAttribute("aria-modal", "true");
+
+    const titleEl = document.createElement("div");
+    titleEl.className = "modal-title";
+    if (title) titleEl.textContent = title;
+    else titleEl.style.display = "none";
+
+    const msgEl = document.createElement("div");
+    msgEl.className = "modal-message";
+    if (message) msgEl.textContent = message;
+    else msgEl.style.display = "none";
+
+    dialog.appendChild(titleEl);
+    dialog.appendChild(msgEl);
+
+    if (bodyEl) {
+      const bodyWrap = document.createElement("div");
+      bodyWrap.className = "modal-body";
+      bodyWrap.appendChild(bodyEl);
+      dialog.appendChild(bodyWrap);
+    }
+
+    const actionsEl = document.createElement("div");
+    actionsEl.className = "modal-actions";
+
+    const cancelBtn = document.createElement("button");
+    cancelBtn.type = "button";
+    cancelBtn.className = "btn";
+    cancelBtn.textContent = cancelText || t("modal.cancel");
+
+    const okBtn = document.createElement("button");
+    okBtn.type = "button";
+    okBtn.className = `btn ${okClass}`;
+    okBtn.textContent = okText || t("modal.ok");
+
+    actionsEl.appendChild(cancelBtn);
+    actionsEl.appendChild(okBtn);
+    dialog.appendChild(actionsEl);
+
+    overlay.appendChild(dialog);
+    document.body.appendChild(overlay);
+
+    let closed = false;
+    const close = (value) => {
+      if (closed) return;
+      closed = true;
+      document.removeEventListener("keydown", onKeyDown, true);
+      overlay.remove();
+      document.body.style.overflow = prevOverflow;
+      activeModal = null;
+      if (lastFocus && typeof lastFocus.focus === "function") {
+        setTimeout(() => {
+          try { lastFocus.focus(); } catch { }
+        }, 0);
+      }
+      resolve(value);
+    };
+
+    const onOk = () => close(true);
+    const onCancel = () => close(null);
+
+    cancelBtn.addEventListener("click", onCancel);
+    okBtn.addEventListener("click", onOk);
+    overlay.addEventListener("mousedown", (e) => {
+      if (e.target === overlay) onCancel();
+    });
+
+    const onKeyDown = (e) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        onCancel();
+        return;
+      }
+      if (e.key !== "Enter") return;
+
+      const isTextArea = e.target && e.target.tagName === "TEXTAREA";
+      if (submitOnEnter && !isTextArea) {
+        e.preventDefault();
+        onOk();
+        return;
+      }
+      if (submitOnCtrlEnter && isTextArea && (e.ctrlKey || e.metaKey)) {
+        e.preventDefault();
+        onOk();
+      }
+    };
+    document.addEventListener("keydown", onKeyDown, true);
+
+    activeModal = { close };
+
+    const focusEl =
+      initialFocusEl ||
+      (bodyEl && (bodyEl.querySelector?.("input, textarea") || null)) ||
+      okBtn;
+    setTimeout(() => {
+      if (focusEl && typeof focusEl.focus === "function") {
+        try { focusEl.focus(); } catch { }
+      }
+    }, 0);
+  });
+}
+
+async function uiConfirm(message, { title = "", okText = null, cancelText = null, okClass = "btn-primary" } = {}) {
+  const ok = await openModal({
+    title,
+    message,
+    okText,
+    cancelText,
+    okClass,
+    submitOnEnter: true,
+  });
+  return ok === true;
+}
+
+async function uiPrompt(
+  message,
+  {
+    title = "",
+    defaultValue = "",
+    placeholder = "",
+    multiline = false,
+    okText = null,
+    cancelText = null,
+  } = {},
+) {
+  const field = multiline ? document.createElement("textarea") : document.createElement("input");
+  field.className = multiline ? "form-textarea modal-textarea" : "form-input";
+  if (!multiline) field.type = "text";
+  field.placeholder = placeholder || "";
+  field.spellcheck = false;
+  field.value = defaultValue || "";
+
+  const body = document.createElement("div");
+  body.appendChild(field);
+
+  const ok = await openModal({
+    title,
+    message,
+    bodyEl: body,
+    okText,
+    cancelText,
+    okClass: "btn-primary",
+    submitOnEnter: !multiline,
+    submitOnCtrlEnter: multiline,
+    initialFocusEl: field,
+  });
+
+  if (ok !== true) return null;
+  return field.value;
 }
 
 // ---- Clipboard ----
@@ -822,26 +1029,36 @@ pages.dashboard = {
   _usageBaselines: {
     firecrawl: {
       used: null,
+      limit: null,
       remaining: null,
       requestCount: 0,
       secondaryUsed: null,
+      secondaryLimit: null,
       secondaryRemaining: null,
+      seededAt: 0,
     },
     tavily: {
       used: null,
+      limit: null,
       remaining: null,
       requestCount: 0,
       secondaryUsed: null,
+      secondaryLimit: null,
       secondaryRemaining: null,
+      seededAt: 0,
     },
     exa: {
       used: null,
+      limit: null,
       remaining: null,
       requestCount: 0,
       secondaryUsed: null,
+      secondaryLimit: null,
       secondaryRemaining: null,
+      seededAt: 0,
     },
   },
+  _metricsState: null,
   _metrics: null,
   _refreshingProvider: new Set(),
 
@@ -868,20 +1085,24 @@ pages.dashboard = {
         </div>
       </div>
 
-      <details class="dash-key-details" id="dashKeyDetails">
-        <summary>${t("dash.keyOverview")}</summary>
-        <div id="dashKeyOverview" class="dash-key-overview"></div>
-      </details>
-
       <div class="dash-section-head">
         <span id="dashUsageUpdated" class="dash-updated">-</span>
       </div>
       <div id="dashUsageGrid" class="dash-providers"></div>
+
+      <details class="dash-key-details" id="dashKeyDetails">
+        <summary>
+          <span>${t("dash.keyOverview")}</span>
+          <svg class="dash-details-arrow" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="6 9 12 15 18 9"/></svg>
+        </summary>
+        <div id="dashKeyOverview" class="dash-key-overview"></div>
+      </details>
     `;
   },
 
   async init() {
     contentEl.addEventListener("click", this._onUsageClick);
+    this._restoreUsageState();
     this._keyDetailsInitialized = false;
     await this._refresh();
     await this._refreshUsageAll();
@@ -906,7 +1127,7 @@ pages.dashboard = {
       ]);
       const keySnapshot = keySnapshotRaw || buildFallbackKeySnapshot(config, status);
       this._keySnapshot = keySnapshot;
-      this._metrics = metrics;
+      this._metrics = this._applyMetricsPersistence(metrics);
 
       const mergedKeyStatuses = mergeConfiguredKeys(keySnapshot);
       const totalKeys = mergedKeyStatuses.length;
@@ -948,6 +1169,103 @@ pages.dashboard = {
     }
   },
 
+  _restoreUsageState() {
+    const storedBaselines = readStorageJson(STORAGE_USAGE_BASELINES_KEY, null);
+    if (storedBaselines && typeof storedBaselines === "object") {
+      ["firecrawl", "tavily", "exa"].forEach((provider) => {
+        const baseline = storedBaselines?.[provider];
+        if (!baseline || typeof baseline !== "object") return;
+        const seededAt = Number(baseline.seededAt || 0);
+        if (!Number.isFinite(seededAt) || seededAt <= 0) return;
+        const hasAnyNumber =
+          typeof baseline.used === "number"
+          || typeof baseline.limit === "number"
+          || typeof baseline.remaining === "number"
+          || typeof baseline.secondaryUsed === "number"
+          || typeof baseline.secondaryLimit === "number"
+          || typeof baseline.secondaryRemaining === "number";
+        if (!hasAnyNumber) return;
+        this._usageBaselines[provider] = {
+          used: typeof baseline.used === "number" ? baseline.used : null,
+          limit: typeof baseline.limit === "number" ? baseline.limit : null,
+          remaining: typeof baseline.remaining === "number" ? baseline.remaining : null,
+          requestCount: Number(baseline.requestCount || 0),
+          secondaryUsed: typeof baseline.secondaryUsed === "number" ? baseline.secondaryUsed : null,
+          secondaryLimit: typeof baseline.secondaryLimit === "number" ? baseline.secondaryLimit : null,
+          secondaryRemaining: typeof baseline.secondaryRemaining === "number" ? baseline.secondaryRemaining : null,
+          seededAt,
+        };
+      });
+    }
+
+    const storedMetricsState = readStorageJson(STORAGE_METRICS_STATE_KEY, null);
+    if (storedMetricsState && typeof storedMetricsState === "object") {
+      this._metricsState = storedMetricsState;
+    } else {
+      this._metricsState = null;
+    }
+  },
+
+  _persistUsageBaselines() {
+    writeStorageJson(STORAGE_USAGE_BASELINES_KEY, this._usageBaselines);
+  },
+
+  _persistMetricsState() {
+    if (!this._metricsState) return;
+    writeStorageJson(STORAGE_METRICS_STATE_KEY, this._metricsState);
+  },
+
+  _applyMetricsPersistence(metrics) {
+    if (!metrics || typeof metrics !== "object") {
+      return metrics;
+    }
+
+    const providers = ["firecrawl", "tavily", "exa"];
+    const state = (this._metricsState && typeof this._metricsState === "object")
+      ? this._metricsState
+      : {};
+
+    const adjusted = {};
+    providers.forEach((provider) => {
+      const raw = metrics?.[provider] || {};
+      const rawRequest = Number(raw.requestCount || 0);
+      const rawRetry = Number(raw.retryCount || 0);
+
+      const entry = (state[provider] && typeof state[provider] === "object")
+        ? state[provider]
+        : {};
+
+      let requestOffset = Number(entry.requestOffset || 0);
+      let retryOffset = Number(entry.retryOffset || 0);
+      const lastRawRequest = Number(entry.lastRawRequest || 0);
+      const lastRawRetry = Number(entry.lastRawRetry || 0);
+
+      if (rawRequest < lastRawRequest) {
+        requestOffset += lastRawRequest;
+      }
+      if (rawRetry < lastRawRetry) {
+        retryOffset += lastRawRetry;
+      }
+
+      state[provider] = {
+        requestOffset,
+        retryOffset,
+        lastRawRequest: rawRequest,
+        lastRawRetry: rawRetry,
+      };
+
+      adjusted[provider] = {
+        requestCount: rawRequest + requestOffset,
+        retryCount: rawRetry + retryOffset,
+        lastRequestTs: raw.lastRequestTs || null,
+      };
+    });
+
+    this._metricsState = state;
+    this._persistMetricsState();
+    return adjusted;
+  },
+
   _onUsageClick: (event) => {
     const logsLink = event.target.closest(".usage-open-logs");
     if (logsLink) {
@@ -968,41 +1286,60 @@ pages.dashboard = {
 
   _setUsageBaseline(provider, snapshot) {
     const metric = this._metricFor(provider);
+    const prevBaseline = this._usageBaselines?.[provider] || {};
     const hasPrimaryMetrics =
       typeof snapshot?.used === "number"
       || typeof snapshot?.limit === "number"
       || typeof snapshot?.remaining === "number";
 
-    // Firecrawl currently only exposes `remainingCredits` from upstream. In that
-    // case we treat the first observed `remaining` as a local "budget limit"
-    // and start `used` from 0, then estimate consumption by request count.
-    const assumeLimitFromRemaining =
+    const isFirecrawlRemainingOnly =
       provider === "firecrawl"
       && hasPrimaryMetrics
       && typeof snapshot?.used !== "number"
       && typeof snapshot?.limit !== "number"
       && typeof snapshot?.remaining === "number";
 
+    let used = typeof snapshot?.used === "number" ? snapshot.used : null;
+    let limit = typeof snapshot?.limit === "number" ? snapshot.limit : null;
+    let remaining = typeof snapshot?.remaining === "number" ? snapshot.remaining : null;
+
+    if (isFirecrawlRemainingOnly && typeof remaining === "number") {
+      const prevLimit = typeof prevBaseline.limit === "number" ? prevBaseline.limit : null;
+      limit = typeof prevLimit === "number" ? Math.max(prevLimit, remaining) : remaining;
+      used = Math.max(0, limit - remaining);
+    } else if (limit == null && typeof prevBaseline.limit === "number") {
+      limit = prevBaseline.limit;
+    }
+
     this._usageBaselines[provider] = {
-      used: assumeLimitFromRemaining ? 0 : (typeof snapshot?.used === "number" ? snapshot.used : null),
-      remaining: typeof snapshot?.remaining === "number" ? snapshot.remaining : null,
+      used,
+      limit,
+      remaining,
       requestCount: Number(metric.requestCount || 0),
       secondaryUsed:
         typeof snapshot?.secondaryUsed === "number" ? snapshot.secondaryUsed : null,
+      secondaryLimit:
+        typeof snapshot?.secondaryLimit === "number"
+          ? snapshot.secondaryLimit
+          : (typeof prevBaseline.secondaryLimit === "number" ? prevBaseline.secondaryLimit : null),
       secondaryRemaining:
         typeof snapshot?.secondaryRemaining === "number"
           ? snapshot.secondaryRemaining
           : null,
+      seededAt: Date.now(),
     };
+    this._persistUsageBaselines();
   },
 
   _estimateUsage(provider, snapshot) {
     const metric = this._metricFor(provider);
     const baseline = this._usageBaselines[provider] || {
       used: null,
+      limit: null,
       remaining: null,
       requestCount: 0,
       secondaryUsed: null,
+      secondaryLimit: null,
       secondaryRemaining: null,
     };
     const requestCount = Number(metric.requestCount || 0);
@@ -1010,15 +1347,7 @@ pages.dashboard = {
 
     const baselineUsed = typeof baseline.used === "number" ? baseline.used : (typeof snapshot?.used === "number" ? snapshot.used : null);
     const used = typeof baselineUsed === "number" ? baselineUsed + deltaRequests : null;
-    let limit = typeof snapshot?.limit === "number" ? snapshot.limit : null;
-    if (
-      provider === "firecrawl"
-      && typeof snapshot?.used !== "number"
-      && typeof snapshot?.limit !== "number"
-      && typeof baseline.remaining === "number"
-    ) {
-      limit = baseline.remaining;
-    }
+    const limit = typeof baseline.limit === "number" ? baseline.limit : (typeof snapshot?.limit === "number" ? snapshot.limit : null);
     let remaining = null;
     if (typeof limit === "number" && typeof used === "number") {
       remaining = Math.max(0, limit - used);
@@ -1033,7 +1362,9 @@ pages.dashboard = {
         ? snapshot.secondaryUsed
         : (typeof baseline.secondaryUsed === "number" ? baseline.secondaryUsed : null);
     const secondaryLimit =
-      typeof snapshot?.secondaryLimit === "number" ? snapshot.secondaryLimit : null;
+      typeof baseline.secondaryLimit === "number"
+        ? baseline.secondaryLimit
+        : (typeof snapshot?.secondaryLimit === "number" ? snapshot.secondaryLimit : null);
     const secondaryRemaining = (() => {
       if (typeof snapshot?.secondaryRemaining === "number") {
         return snapshot.secondaryRemaining;
@@ -1069,9 +1400,23 @@ pages.dashboard = {
         tavily: usage?.tavily || null,
         exa: usage?.exa || null,
       };
-      this._setUsageBaseline("firecrawl", this._usageByProvider.firecrawl);
-      this._setUsageBaseline("tavily", this._usageByProvider.tavily);
-      this._setUsageBaseline("exa", this._usageByProvider.exa);
+      ["firecrawl", "tavily", "exa"].forEach((provider) => {
+        if (Number(this._usageBaselines?.[provider]?.seededAt || 0) > 0) return;
+        const snapshot = this._usageByProvider[provider];
+        const hasMetrics = snapshot
+          && snapshot.configured
+          && snapshot.hasEnabledKey
+          && (
+            typeof snapshot.used === "number"
+            || typeof snapshot.limit === "number"
+            || typeof snapshot.remaining === "number"
+            || typeof snapshot.secondaryUsed === "number"
+            || typeof snapshot.secondaryLimit === "number"
+            || typeof snapshot.secondaryRemaining === "number"
+          );
+        if (!hasMetrics) return;
+        this._setUsageBaseline(provider, snapshot);
+      });
     } catch (e) {
       showToast(`${t("dash.usageFetchFailed")}: ${e}`, "error");
     }
@@ -1080,12 +1425,26 @@ pages.dashboard = {
   async _refreshProviderUsage(provider, options = {}) {
     if (this._refreshingProvider.has(provider)) return;
     const silent = !!options.silent;
+    const force = options.force !== undefined ? !!options.force : !silent;
     this._refreshingProvider.add(provider);
     this._renderUsage();
     try {
-      const snapshot = await invoke("get_provider_usage", { provider });
+      const snapshot = await invoke("get_provider_usage", { provider, force });
       this._usageByProvider[provider] = snapshot;
-      this._setUsageBaseline(provider, snapshot);
+      const hasMetrics = snapshot
+        && snapshot.configured
+        && snapshot.hasEnabledKey
+        && (
+          typeof snapshot.used === "number"
+          || typeof snapshot.limit === "number"
+          || typeof snapshot.remaining === "number"
+          || typeof snapshot.secondaryUsed === "number"
+          || typeof snapshot.secondaryLimit === "number"
+          || typeof snapshot.secondaryRemaining === "number"
+        );
+      if (hasMetrics) {
+        this._setUsageBaseline(provider, snapshot);
+      }
     } catch (e) {
       if (!silent) {
         showToast(`${t("dash.usageFetchFailed")}: ${e}`, "error");
@@ -1509,8 +1868,9 @@ pages.config = {
     document.getElementById("cfgReloadBtn").addEventListener("click", async () => {
       const btn = document.getElementById("cfgReloadBtn");
       const isDirty = document.getElementById("cfgDirtyBadge")?.classList.contains("visible");
-      if (isDirty && !window.confirm(t("cfg.reloadConfirm"))) {
-        return;
+      if (isDirty) {
+        const ok = await uiConfirm(t("cfg.reloadConfirm"), { title: t("cfg.reload") });
+        if (!ok) return;
       }
       setLoading(btn, true);
       try {
@@ -1708,7 +2068,7 @@ pages.config = {
     return { keys, disabled };
   },
 
-  _onClick: (event) => {
+  _onClick: async (event) => {
     const page = pages.config;
 
     // Accordion toggle
@@ -1747,29 +2107,20 @@ pages.config = {
     if (addBtn) {
       const provider = addBtn.dataset.provider;
       if (!provider) return;
+      const raw = await uiPrompt(t("cfg.addPrompt"), { title: t("cfg.addKey") });
+      if (raw === null) return;
+      const parsed = parseKeys(raw);
+      if (!parsed.length) return;
       if (!page._providerRows[provider]) page._providerRows[provider] = [];
-      page._providerRows[provider].push(page._newRow("", true));
-      // Ensure accordion is open
+      parsed.forEach((key) => {
+        page._providerRows[provider].push(page._newRow(key, true));
+      });
       page._providerOpen[provider] = true;
       const acc = addBtn.closest(".cfg-accordion");
       if (acc) acc.classList.add("open");
-      // If in text mode, render and focus textarea at end
+      page._renderProviderList(provider);
+      page._checkDirty();
       if (page._providerViewMode[provider] === "text") {
-        page._renderProviderList(provider);
-        page._checkDirty();
-        setTimeout(() => {
-          const ta = document.querySelector(`.cfg-text-area[data-provider="${provider}"]`);
-          if (ta) { ta.focus(); ta.selectionStart = ta.selectionEnd = ta.value.length; }
-        }, 50);
-      } else {
-        // Switch to text mode for empty key entry — easier to type
-        page._providerViewMode[provider] = "text";
-        const vt = acc && acc.querySelector(".cfg-view-toggle");
-        if (vt) vt.querySelectorAll(".cfg-view-opt").forEach((o) => {
-          o.classList.toggle("active", o.dataset.v === "text");
-        });
-        page._renderProviderList(provider);
-        page._checkDirty();
         setTimeout(() => {
           const ta = document.querySelector(`.cfg-text-area[data-provider="${provider}"]`);
           if (ta) { ta.focus(); ta.selectionStart = ta.selectionEnd = ta.value.length; }
@@ -1783,7 +2134,7 @@ pages.config = {
     if (batchBtn) {
       const provider = batchBtn.dataset.provider;
       if (!provider) return;
-      const raw = window.prompt(t("cfg.batchPrompt"), "");
+      const raw = await uiPrompt(t("cfg.batchPrompt"), { title: t("cfg.batchAdd"), multiline: true });
       if (raw === null) return;
       const parsed = parseKeys(raw);
       if (!parsed.length) return;
@@ -1796,6 +2147,12 @@ pages.config = {
       if (acc) acc.classList.add("open");
       page._renderProviderList(provider);
       page._checkDirty();
+      if (page._providerViewMode[provider] === "text") {
+        setTimeout(() => {
+          const ta = document.querySelector(`.cfg-text-area[data-provider="${provider}"]`);
+          if (ta) { ta.focus(); ta.selectionStart = ta.selectionEnd = ta.value.length; }
+        }, 50);
+      }
       return;
     }
 
@@ -1846,7 +2203,8 @@ pages.config = {
       const sel = page._providerSelected[provider];
       if (!sel.size) return;
       const msg = t("cfg.batchRemoveConfirm").replace("${count}", sel.size);
-      if (!window.confirm(msg)) return;
+      const ok = await uiConfirm(msg, { title: t("cfg.batchRemove"), okClass: "btn-danger" });
+      if (!ok) return;
       page._providerRows[provider] = (page._providerRows[provider] || []).filter((r) => !sel.has(r.id));
       page._renderProviderList(provider);
       page._checkDirty();

@@ -1,6 +1,7 @@
 import time
 import re
 from playwright.sync_api import sync_playwright
+from playwright_stealth import Stealth
 from mail_tm_utils import MailTM
 
 # --- 配置文件 ---
@@ -124,10 +125,14 @@ def run_registration(headless=False, mail_factory=MailTM):
 
         # 启动浏览器
         browser = p.chromium.launch(headless=headless) 
-        context = browser.new_context()
+        context = browser.new_context(
+            user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36"
+        )
         
         # --- 步骤 2: Tavily 注册 ---
         tavily_page = context.new_page()
+        Stealth().apply_stealth_sync(tavily_page)
+        
         print("[*] 正在打开 Tavily 网址...")
         tavily_page.goto("https://app.tavily.com/sign-up", wait_until="networkidle")
         

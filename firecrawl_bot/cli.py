@@ -88,8 +88,10 @@ def main():
     print("\n\033[1mSelect Email Provider\033[0m")
     print("1. mail.tm (default)")
     print("2. DuckMail (https://api.duckmail.sbs)")
+    print("3. mail.gw (https://api.mail.gw)")
+    print("4. InboxKitten (https://inboxkitten.com)")
 
-    email_choice = input("\nSelect email provider (1/2, default 1): ").strip()
+    email_choice = input("\nSelect email provider (1/2/3/4, default 1): ").strip()
     mail_factory_kwargs = {}
     if email_choice == "2":
         from duckmail_utils import DuckMail
@@ -102,6 +104,12 @@ def main():
             mail_factory_kwargs["mail_factory"] = lambda: DuckMail(api_key=duckmail_api_key)
         else:
             mail_factory_kwargs["mail_factory"] = DuckMail
+    elif email_choice == "3":
+        from mail_gw_utils import MailGW
+        mail_factory_kwargs["mail_factory"] = MailGW
+    elif email_choice == "4":
+        from inboxkitten_utils import InboxKitten
+        mail_factory_kwargs["mail_factory"] = InboxKitten
 
     print("\n\033[1mWelcome to Multi-Bot Registration\033[0m")
     print("1. Firecrawl")

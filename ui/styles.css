@@ -871,6 +871,60 @@ body {
 }
 
 /* ============================================
+   11.1 COMPONENTS: Modal dialogs
+   ============================================ */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 2000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(0, 0, 0, 0.68);
+}
+
+.modal {
+  width: min(560px, 100%);
+  background: var(--bg-card);
+  border: 0.5px solid var(--border-default);
+  border-radius: 0;
+  box-shadow: var(--shadow-elevated);
+  padding: 18px 18px 16px;
+}
+
+.modal-title {
+  font-size: 11px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  color: var(--text-muted);
+  margin-bottom: 10px;
+}
+
+.modal-message {
+  font-size: 13px;
+  color: var(--text-primary);
+  margin-bottom: 12px;
+  white-space: pre-wrap;
+}
+
+.modal-body {
+  margin-bottom: 14px;
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.modal-textarea {
+  min-height: 160px;
+  resize: vertical;
+}
+
+/* ============================================
    12. PAGE: Dashboard — Option B
    ============================================ */
 
@@ -942,27 +996,38 @@ body {
 
 .dash-key-details summary {
   cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
   font-size: 12px;
   font-weight: 700;
   letter-spacing: 0.06em;
   text-transform: uppercase;
   color: var(--text-primary);
   outline: none;
+  list-style: none;
 }
 
 .dash-key-details summary::-webkit-details-marker {
   display: none;
 }
 
-.dash-key-details summary::after {
-  content: '▾';
-  float: right;
+.dash-key-details summary::marker {
+  content: '';
+}
+
+.dash-details-arrow {
   color: var(--text-muted);
-  transform: rotate(-90deg);
+  flex-shrink: 0;
   transition: transform var(--transition-fast);
 }
 
-.dash-key-details[open] summary::after {
+.dash-key-details:not([open]) .dash-details-arrow {
+  transform: rotate(-90deg);
+}
+
+.dash-key-details[open] .dash-details-arrow {
   transform: rotate(0deg);
 }
 
