@@ -23,3 +23,4 @@ firecrawl_bot/exa_keys*.txt
 
 # local codex/claude workspace data
 .claude/
+.ace-tool/

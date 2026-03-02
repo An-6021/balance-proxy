@@ -1,14 +1,38 @@
 import time
 import re
+import random
+import os
 from playwright.sync_api import sync_playwright
 from playwright_stealth import Stealth
 from mail_tm_utils import MailTM
+from mail_gw_utils import MailGW
+from duckmail_utils import DuckMail
+from inboxkitten_utils import InboxKitten
 
-# --- 配置文件 ---
-PASSWORD = "TavilyBot2026!"
-SILICON_FLOW_KEY = "sk-gmoldzqdqyzapzsdqifmwmyyqiehkhnhgcdtarhotyhukbzt"
-# 使用最强大的 Qwen3-VL-235B 模型进行高精度 OCR
-OCR_MODEL = "Qwen/Qwen3-VL-235B-A22B-Instruct" 
+# 导入配置
+from config import (
+    DUCKMAIL_API_KEY,
+    TAVILY_PASSWORD,
+    SILICON_FLOW_KEY,
+    OCR_MODEL,
+    DEFAULT_PROXY,
+)
+
+# 邮箱服务工厂函数（支持带参数的实例化）
+def create_duckmail():
+    return DuckMail(api_key=DUCKMAIL_API_KEY)
+
+# 邮箱服务优先级列表（从最不常见到最常见）
+# Auth0 可能已拉黑 mail.tm，尝试其他服务
+MAIL_PROVIDERS = [
+    create_duckmail,  # duckmail.sbs - 较新，可能未被拉黑
+    MailGW,           # mail.gw - 动态域名
+    InboxKitten,      # inboxkitten.com
+    MailTM,           # mail.tm - 可能已被拉黑
+]
+
+# 兼容旧代码的变量名
+PASSWORD = TAVILY_PASSWORD 
 
 import base64
 import requests
@@ -112,29 +136,170 @@ def solve_captcha(page):
         print(f"[-] 提取验证码失败: {e}")
     return None
 
-def run_registration(headless=False, mail_factory=MailTM):
-    with sync_playwright() as p:
-        # 1. Initialize temp email API
-        mail = mail_factory()
-        if not mail.create_account():
-            print("Failed to create temporary email.")
-            return None
+def create_fresh_context(browser, p):
+    """创建一个带有随机指纹的浏览器上下文"""
+    # 随机选择常见的 User-Agent
+    user_agents = [
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    ]
+    
+    # 随机视口大小
+    viewports = [
+        {"width": 1920, "height": 1080},
+        {"width": 1680, "height": 1050},
+        {"width": 1440, "height": 900},
+        {"width": 1536, "height": 864},
+        {"width": 1366, "height": 768},
+    ]
+    
+    # 随机时区和语言
+    locales = ["en-US", "en-GB", "en-CA"]
+    timezones = ["America/New_York", "America/Los_Angeles", "Europe/London", "Europe/Paris"]
+    
+    context = browser.new_context(
+        user_agent=random.choice(user_agents),
+        viewport=random.choice(viewports),
+        locale=random.choice(locales),
+        timezone_id=random.choice(timezones),
+        # 添加更多浏览器特征
+        color_scheme=random.choice(["light", "dark"]),
+        has_touch=random.choice([True, False]),
+        is_mobile=False,
+        java_script_enabled=True,
+    )
+    
+    # 注入额外的反检测脚本
+    context.add_init_script("""
+        // 覆盖 webdriver 属性
+        Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
         
-        email_addr = mail.address
-        print(f"[+] 获取到有效邮箱: {email_addr}")
+        // 覆盖 plugins 长度
+        Object.defineProperty(navigator, 'plugins', { 
+            get: () => [1, 2, 3, 4, 5] 
+        });
+        
+        // 覆盖 languages
+        Object.defineProperty(navigator, 'languages', { 
+            get: () => ['en-US', 'en'] 
+        });
+        
+        // 覆盖 platform
+        Object.defineProperty(navigator, 'platform', { 
+            get: () => 'Win32' 
+        });
+        
+        // 覆盖 hardwareConcurrency
+        Object.defineProperty(navigator, 'hardwareConcurrency', { 
+            get: () => 8 
+        });
+        
+        // 覆盖 deviceMemory
+        Object.defineProperty(navigator, 'deviceMemory', { 
+            get: () => 8 
+        });
+        
+        // 隐藏自动化标志
+        window.chrome = { runtime: {} };
+        
+        // 覆盖 permissions
+        const originalQuery = window.navigator.permissions.query;
+        window.navigator.permissions.query = (parameters) => (
+            parameters.name === 'notifications' ?
+                Promise.resolve({ state: Notification.permission }) :
+                originalQuery(parameters)
+        );
+    """)
+    
+    return context
 
-        # 启动浏览器
-        browser = p.chromium.launch(headless=headless) 
-        context = browser.new_context(
-            user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36"
+
+def run_registration(headless=False, mail_factory=None, proxy=None):
+    """
+    Tavily 注册函数
+    
+    参数:
+        headless: 是否无头模式
+        mail_factory: 邮箱服务类，None 表示自动尝试所有可用服务
+        proxy: 代理设置，例如 "http://127.0.0.1:7890" 或 "socks5://127.0.0.1:1080"
+    """
+    with sync_playwright() as p:
+        # 1. 初始化临时邮箱 API
+        mail = None
+        email_addr = None
+        
+        if mail_factory:
+            # 使用指定的邮箱服务
+            mail = mail_factory()
+            if mail.create_account():
+                email_addr = mail.address
+                print(f"[+] 获取到有效邮箱: {email_addr}")
+            else:
+                print(f"[-] 指定的邮箱服务创建失败")
+                return None
+        else:
+            # 自动尝试所有邮箱服务
+            for provider in MAIL_PROVIDERS:
+                # 获取名称（支持类和工厂函数）
+                name = provider.__name__ if hasattr(provider, '__name__') else provider.__class__.__name__
+                print(f"[*] 尝试使用 {name}...")
+                try:
+                    mail = provider()
+                    if mail.create_account():
+                        email_addr = mail.address
+                        print(f"[+] 获取到有效邮箱: {email_addr} ({name})")
+                        break
+                except Exception as e:
+                    print(f"[-] {name} 失败: {e}")
+                    continue
+            
+            if not email_addr:
+                print("[-] 所有邮箱服务均不可用")
+                return None
+
+        # 启动浏览器（带更多反检测参数）
+        launch_args = [
+            '--disable-blink-features=AutomationControlled',
+            '--disable-infobars',
+            '--disable-extensions',
+            '--disable-gpu',
+            '--no-sandbox',
+            '--disable-dev-shm-usage',
+            '--disable-web-security',
+            '--disable-features=IsolateOrigins,site-per-process',
+        ]
+        
+        # 如果提供了代理
+        if proxy:
+            launch_args.append(f'--proxy-server={proxy}')
+            print(f"[*] 使用代理: {proxy}")
+        
+        browser = p.chromium.launch(
+            headless=headless,
+            args=launch_args,
+            # 使用真实 Chrome 而非 Chromium（如果可用）
+            channel="chrome" if os.path.exists("/Applications/Google Chrome.app") else "chromium",
         )
+        
+        context = create_fresh_context(browser, p)
         
         # --- 步骤 2: Tavily 注册 ---
         tavily_page = context.new_page()
         Stealth().apply_stealth_sync(tavily_page)
         
+        # 模拟人类行为：随机延迟
+        time.sleep(random.uniform(0.5, 1.5))
+        
         print("[*] 正在打开 Tavily 网址...")
-        tavily_page.goto("https://app.tavily.com/sign-up", wait_until="networkidle")
+        # 先访问主页建立自然访问路径
+        tavily_page.goto("https://tavily.com/", wait_until="networkidle", timeout=30000)
+        time.sleep(random.uniform(1.0, 2.0))  # 模拟阅读页面
+        
+        # 然后导航到注册页
+        tavily_page.goto("https://app.tavily.com/sign-up", wait_until="networkidle", timeout=30000)
         
         # 检查是否因为已登录被重定向到 /home
         if "/home" in tavily_page.url:
@@ -150,10 +315,28 @@ def run_registration(headless=False, mail_factory=MailTM):
             time.sleep(0.5)
 
         print("[*] 模仿人类输入邮箱...")
-        # 清空并逐字输入
+        # 模拟人类行为：先移动鼠标到输入框
+        email_input = tavily_page.query_selector('input#email')
+        if email_input:
+            # 随机移动鼠标
+            box = email_input.bounding_box()
+            if box:
+                tavily_page.mouse.move(
+                    box['x'] + random.randint(0, int(box['width'])),
+                    box['y'] + random.randint(0, int(box['height']))
+                )
+                time.sleep(random.uniform(0.1, 0.3))
+        
+        # 清空并逐字输入（带随机延迟）
         tavily_page.click('input#email')
-        tavily_page.fill('input#email', '') # 先清空
-        tavily_page.type('input#email', email_addr, delay=100) # 延迟 100ms 一个字
+        tavily_page.fill('input#email', '')  # 先清空
+        
+        # 模拟人类打字速度（50-150ms 随机延迟）
+        for char in email_addr:
+            tavily_page.type('input#email', char, delay=random.randint(50, 150))
+            # 偶尔暂停（模拟人类思考）
+            if random.random() < 0.1:
+                time.sleep(random.uniform(0.1, 0.3))
         
         # 处理验证码逻辑
         max_retries = 5
@@ -370,5 +553,24 @@ def run_registration(headless=False, mail_factory=MailTM):
             }
 
 if __name__ == "__main__":
-    res = run_registration(headless=False)
+    import argparse
+    parser = argparse.ArgumentParser(description='Tavily 自动注册脚本')
+    parser.add_argument('--headless', action='store_true', help='无头模式运行')
+    parser.add_argument('--proxy', type=str, default=None, help='代理服务器，例如 http://127.0.0.1:7890')
+    parser.add_argument('--mail', type=str, default=None, 
+                        choices=['mailtm', 'mailgw', 'duckmail', 'inboxkitten'],
+                        help='指定邮箱服务')
+    args = parser.parse_args()
+    
+    mail_factory = None
+    if args.mail == 'mailtm':
+        mail_factory = MailTM
+    elif args.mail == 'mailgw':
+        mail_factory = MailGW
+    elif args.mail == 'duckmail':
+        mail_factory = DuckMail
+    elif args.mail == 'inboxkitten':
+        mail_factory = InboxKitten
+    
+    res = run_registration(headless=args.headless, mail_factory=mail_factory, proxy=args.proxy)
     print(res)

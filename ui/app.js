@@ -344,22 +344,24 @@ const I18N = {
 
 let currentLang = localStorage.getItem("lang") || "zh";
 
-const STORAGE_USAGE_BASELINES_KEY = "balanceProxy.usageBaselines.v1";
-const STORAGE_METRICS_STATE_KEY = "balanceProxy.metricsState.v1";
+const DASHBOARD_STATE_VERSION = 1;
+// Legacy localStorage keys (migrated to dashboard-state.json via Tauri)
+const LEGACY_STORAGE_USAGE_BASELINES_KEY = "balanceProxy.usageBaselines.v1";
+const LEGACY_STORAGE_METRICS_STATE_KEY = "balanceProxy.metricsState.v1";
 
-function readStorageJson(key, fallback) {
+function readLegacyStorageJson(key) {
   try {
     const raw = localStorage.getItem(key);
-    if (!raw) return fallback;
+    if (!raw) return null;
     return JSON.parse(raw);
   } catch {
-    return fallback;
+    return null;
   }
 }
 
-function writeStorageJson(key, value) {
+function removeLegacyStorageKey(key) {
   try {
-    localStorage.setItem(key, JSON.stringify(value));
+    localStorage.removeItem(key);
   } catch {
     // ignore
   }
@@ -1019,6 +1021,9 @@ async function updateSidebarStatus() {
 pages.dashboard = {
   _timer: null,
   _usageTimer: null,
+  _persistTimer: null,
+  _persistDirty: false,
+  _persistInFlight: false,
   _keySnapshot: null,
   _keyDetailsInitialized: false,
   _usageByProvider: {
@@ -1102,7 +1107,7 @@ pages.dashboard = {
 
   async init() {
     contentEl.addEventListener("click", this._onUsageClick);
-    this._restoreUsageState();
+    await this._restoreUsageState();
     this._keyDetailsInitialized = false;
     await this._refresh();
     await this._refreshUsageAll();
@@ -1169,8 +1174,42 @@ pages.dashboard = {
     }
   },
 
-  _restoreUsageState() {
-    const storedBaselines = readStorageJson(STORAGE_USAGE_BASELINES_KEY, null);
+  async _restoreUsageState() {
+    let storedBaselines = null;
+    let storedMetricsState = null;
+
+    if (invoke) {
+      try {
+        const persisted = await invoke("load_dashboard_state");
+        storedBaselines = persisted?.usageBaselines || null;
+        storedMetricsState = persisted?.metricsState || null;
+      } catch {
+        // ignore
+      }
+    }
+
+    const legacyBaselines = readLegacyStorageJson(LEGACY_STORAGE_USAGE_BASELINES_KEY);
+    const legacyMetricsState = readLegacyStorageJson(LEGACY_STORAGE_METRICS_STATE_KEY);
+    const migratedBaselines = !storedBaselines && legacyBaselines && typeof legacyBaselines === "object";
+    const migratedMetrics = !storedMetricsState && legacyMetricsState && typeof legacyMetricsState === "object";
+    if ((migratedBaselines || migratedMetrics) && invoke) {
+      if (migratedBaselines) storedBaselines = legacyBaselines;
+      if (migratedMetrics) storedMetricsState = legacyMetricsState;
+      try {
+        await invoke("save_dashboard_state", {
+          payload: {
+            version: DASHBOARD_STATE_VERSION,
+            usageBaselines: storedBaselines,
+            metricsState: storedMetricsState,
+          },
+        });
+        removeLegacyStorageKey(LEGACY_STORAGE_USAGE_BASELINES_KEY);
+        removeLegacyStorageKey(LEGACY_STORAGE_METRICS_STATE_KEY);
+      } catch {
+        // ignore
+      }
+    }
+
     if (storedBaselines && typeof storedBaselines === "object") {
       ["firecrawl", "tavily", "exa"].forEach((provider) => {
         const baseline = storedBaselines?.[provider];
@@ -1198,7 +1237,6 @@ pages.dashboard = {
       });
     }
 
-    const storedMetricsState = readStorageJson(STORAGE_METRICS_STATE_KEY, null);
     if (storedMetricsState && typeof storedMetricsState === "object") {
       this._metricsState = storedMetricsState;
     } else {
@@ -1207,12 +1245,46 @@ pages.dashboard = {
   },
 
   _persistUsageBaselines() {
-    writeStorageJson(STORAGE_USAGE_BASELINES_KEY, this._usageBaselines);
+    this._queuePersistDashboardState();
   },
 
   _persistMetricsState() {
     if (!this._metricsState) return;
-    writeStorageJson(STORAGE_METRICS_STATE_KEY, this._metricsState);
+    this._queuePersistDashboardState();
+  },
+
+  _queuePersistDashboardState() {
+    if (!invoke) return;
+    this._persistDirty = true;
+    if (this._persistTimer) clearTimeout(this._persistTimer);
+    this._persistTimer = setTimeout(() => {
+      this._persistTimer = null;
+      void this._flushPersistDashboardState();
+    }, 400);
+  },
+
+  async _flushPersistDashboardState() {
+    if (!invoke) return;
+    if (this._persistInFlight || !this._persistDirty) return;
+
+    this._persistInFlight = true;
+    this._persistDirty = false;
+    try {
+      await invoke("save_dashboard_state", {
+        payload: {
+          version: DASHBOARD_STATE_VERSION,
+          usageBaselines: this._usageBaselines,
+          metricsState: this._metricsState,
+        },
+      });
+    } catch {
+      this._persistDirty = true;
+    } finally {
+      this._persistInFlight = false;
+    }
+    if (this._persistDirty) {
+      this._queuePersistDashboardState();
+    }
   },
 
   _applyMetricsPersistence(metrics) {
@@ -1226,6 +1298,7 @@ pages.dashboard = {
       : {};
 
     const adjusted = {};
+    let stateChanged = false;
     providers.forEach((provider) => {
       const raw = metrics?.[provider] || {};
       const rawRequest = Number(raw.requestCount || 0);
@@ -1247,12 +1320,21 @@ pages.dashboard = {
         retryOffset += lastRawRetry;
       }
 
-      state[provider] = {
+      const nextEntry = {
         requestOffset,
         retryOffset,
         lastRawRequest: rawRequest,
         lastRawRetry: rawRetry,
       };
+      if (
+        Number(entry.requestOffset || 0) !== requestOffset
+        || Number(entry.retryOffset || 0) !== retryOffset
+        || lastRawRequest !== rawRequest
+        || lastRawRetry !== rawRetry
+      ) {
+        stateChanged = true;
+      }
+      state[provider] = nextEntry;
 
       adjusted[provider] = {
         requestCount: rawRequest + requestOffset,
@@ -1262,7 +1344,9 @@ pages.dashboard = {
     });
 
     this._metricsState = state;
-    this._persistMetricsState();
+    if (stateChanged) {
+      this._persistMetricsState();
+    }
     return adjusted;
   },
 
@@ -1688,6 +1772,11 @@ pages.dashboard = {
   destroy() {
     if (this._timer) { clearInterval(this._timer); this._timer = null; }
     if (this._usageTimer) { clearInterval(this._usageTimer); this._usageTimer = null; }
+    if (this._persistTimer) {
+      clearTimeout(this._persistTimer);
+      this._persistTimer = null;
+    }
+    void this._flushPersistDashboardState();
     contentEl.removeEventListener("click", this._onUsageClick);
   },
 };
@@ -2718,6 +2807,10 @@ async function bootstrap() {
 
 window.addEventListener("beforeunload", () => {
   if (globalTimer) clearInterval(globalTimer);
+  try {
+    pages.dashboard._persistDirty = true;
+    void pages.dashboard._flushPersistDashboardState();
+  } catch { }
 });
 
 bootstrap();

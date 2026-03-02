@@ -36,6 +36,7 @@ const EXA_KEY_BUDGET_USD: f64 = 10.0;
 const EXA_FREE_REQUESTS_PER_MONTH: u64 = 1_000;
 const EXA_USAGE_LEDGER_FILENAME: &str = "exa-usage-ledger.json";
 const KEY_HEALTH_FILENAME: &str = "key-health.json";
+const DASHBOARD_STATE_FILENAME: &str = "dashboard-state.json";
 
 const REQUEST_HEADER_BLOCKLIST: [&str; 11] = [
     "connection",
@@ -682,12 +683,32 @@ fn derive_status_flags(
     )
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+struct DashboardPersistedState {
+    version: u32,
+    usage_baselines: Option<serde_json::Value>,
+    metrics_state: Option<serde_json::Value>,
+}
+
+impl Default for DashboardPersistedState {
+    fn default() -> Self {
+        Self {
+            version: 1,
+            usage_baselines: None,
+            metrics_state: None,
+        }
+    }
+}
+
 #[derive(Clone)]
 struct AppState {
     config: Arc<RwLock<ProxyConfig>>,
     config_file_path: PathBuf,
     usage_cache_file_path: PathBuf,
     usage_cache: Arc<RwLock<Option<UsageSnapshot>>>,
+    dashboard_state_file_path: PathBuf,
+    dashboard_state: Arc<RwLock<DashboardPersistedState>>,
     key_health_file_path: PathBuf,
     key_health: Arc<RwLock<KeyHealthStore>>,
     exa_usage_ledger_file_path: PathBuf,
@@ -1083,6 +1104,33 @@ fn persist_usage_cache_to_path(path: &PathBuf, snapshot: &UsageSnapshot) -> Resu
     let text = serde_json::to_string_pretty(snapshot)
         .map_err(|e| format!("Failed to serialize usage cache: {}", e))?;
     fs::write(path, text).map_err(|e| format!("Failed to write usage cache: {}", e))?;
+    Ok(())
+}
+
+fn dashboard_state_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("Failed to resolve app data dir: {}", e))?;
+    fs::create_dir_all(&app_data_dir)
+        .map_err(|e| format!("Failed to create app data dir: {}", e))?;
+    Ok(app_data_dir.join(DASHBOARD_STATE_FILENAME))
+}
+
+fn load_dashboard_state_from_path(path: &PathBuf) -> DashboardPersistedState {
+    let Ok(text) = fs::read_to_string(path) else {
+        return DashboardPersistedState::default();
+    };
+    serde_json::from_str(&text).unwrap_or_default()
+}
+
+fn persist_dashboard_state_to_path(
+    path: &PathBuf,
+    snapshot: &DashboardPersistedState,
+) -> Result<(), String> {
+    let text = serde_json::to_string_pretty(snapshot)
+        .map_err(|e| format!("Failed to serialize dashboard state: {}", e))?;
+    fs::write(path, text).map_err(|e| format!("Failed to write dashboard state: {}", e))?;
     Ok(())
 }
 
@@ -4192,6 +4240,25 @@ async fn get_runtime_metrics(
 }
 
 #[tauri::command]
+async fn load_dashboard_state(
+    state: tauri::State<'_, AppState>,
+) -> Result<DashboardPersistedState, String> {
+    Ok(state.dashboard_state.read().await.clone())
+}
+
+#[tauri::command]
+async fn save_dashboard_state(
+    state: tauri::State<'_, AppState>,
+    payload: DashboardPersistedState,
+) -> Result<(), String> {
+    let mut normalized = payload;
+    normalized.version = normalized.version.max(1);
+    *state.dashboard_state.write().await = normalized.clone();
+    persist_dashboard_state_to_path(&state.dashboard_state_file_path, &normalized)?;
+    Ok(())
+}
+
+#[tauri::command]
 async fn build_mcp_config(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
@@ -4856,6 +4923,8 @@ pub fn run() {
                 let config_file_path = config_path(&app.handle())?;
                 let usage_cache_file_path = usage_cache_path(&app.handle())?;
                 let usage_cache = load_usage_cache_from_path(&usage_cache_file_path);
+                let dashboard_state_file_path = dashboard_state_path(&app.handle())?;
+                let dashboard_state = load_dashboard_state_from_path(&dashboard_state_file_path);
                 let key_health_file_path = key_health_path(&app.handle())?;
                 let key_health =
                     load_key_health_from_path(&key_health_file_path).unwrap_or_default();
@@ -4873,6 +4942,8 @@ pub fn run() {
                     config_file_path,
                     usage_cache_file_path,
                     usage_cache: Arc::new(RwLock::new(usage_cache)),
+                    dashboard_state_file_path,
+                    dashboard_state: Arc::new(RwLock::new(dashboard_state)),
                     key_health_file_path,
                     key_health: Arc::new(RwLock::new(key_health)),
                     exa_usage_ledger_file_path,
@@ -5027,6 +5098,8 @@ pub fn run() {
             get_usage_snapshot,
             get_provider_usage,
             get_runtime_metrics,
+            load_dashboard_state,
+            save_dashboard_state,
             build_mcp_config,
             get_launch_on_login_enabled,
             set_launch_on_login_enabled
