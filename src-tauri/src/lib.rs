@@ -4830,6 +4830,11 @@ fn show_main_window<R: tauri::Runtime, M: Manager<R>>(manager: &M) {
     }
 }
 
+#[cfg(target_os = "macos")]
+fn macos_tray_template_icon() -> tauri::image::Image<'static> {
+    tauri::image::Image::new(include_bytes!("../icons/trayTemplate.rgba"), 64, 64)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let silent_start_enabled = Arc::new(AtomicBool::new(false));
@@ -5015,6 +5020,13 @@ pub fn run() {
                     .tooltip("Balance Proxy - 代理已停止")
                     .show_menu_on_left_click(true);
 
+                #[cfg(target_os = "macos")]
+                {
+                    tray = tray.icon_as_template(true);
+                    tray = tray.icon(macos_tray_template_icon());
+                }
+
+                #[cfg(not(target_os = "macos"))]
                 if let Some(icon) = app.default_window_icon().cloned() {
                     tray = tray.icon(icon);
                 }

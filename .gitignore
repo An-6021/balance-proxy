@@ -11,7 +11,10 @@ firecrawl_bot/__pycache__/
 firecrawl_bot/.DS_Store
 firecrawl_bot/*.pyc
 firecrawl_bot/*.png
+firecrawl_bot/*.svg
 firecrawl_bot/*.html
+firecrawl_bot/local_config.json
+firecrawl_bot/local_config.json.tmp
 firecrawl_bot/accounts.txt
 firecrawl_bot/keys.txt
 firecrawl_bot/firecrawl_accounts*.txt
