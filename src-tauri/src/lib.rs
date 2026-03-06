@@ -739,6 +739,29 @@ struct ServerHandle {
     listen_url: String,
 }
 
+async fn stop_server_handle(mut handle: ServerHandle) {
+    if let Some(shutdown_tx) = handle.shutdown_tx.take() {
+        let _ = shutdown_tx.send(());
+    }
+    let _ = handle.join_handle.await;
+}
+
+async fn rollback_new_server_handles(
+    firecrawl_handle: &mut Option<ServerHandle>,
+    tavily_handle: &mut Option<ServerHandle>,
+    exa_handle: &mut Option<ServerHandle>,
+) {
+    if let Some(handle) = firecrawl_handle.take() {
+        stop_server_handle(handle).await;
+    }
+    if let Some(handle) = tavily_handle.take() {
+        stop_server_handle(handle).await;
+    }
+    if let Some(handle) = exa_handle.take() {
+        stop_server_handle(handle).await;
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ProxyStatus {
@@ -929,9 +952,6 @@ impl RoundRobinKeyManager {
 
         let start = self.next_index % count;
 
-        let mut earliest_idx: Option<usize> = None;
-        let mut earliest_wait = Duration::MAX;
-
         for offset in 0..count {
             let idx = (start + offset) % count;
             let key_state = &self.keys[idx];
@@ -951,21 +971,9 @@ impl RoundRobinKeyManager {
                     value: self.keys[idx].value.clone(),
                 });
             }
-
-            if wait < earliest_wait {
-                earliest_wait = wait;
-                earliest_idx = Some(idx);
-            }
         }
 
-        let Some(earliest_idx) = earliest_idx else {
-            return None;
-        };
-        self.next_index = (earliest_idx + 1) % count;
-        Some(SelectedKey {
-            index: earliest_idx,
-            value: self.keys[earliest_idx].value.clone(),
-        })
+        None
     }
 
     fn mark_retryable_failure(&mut self, key_index: usize, status_code: u16) -> KeyFailureAction {
@@ -1063,6 +1071,17 @@ fn month_key_from_ts(ts: u64) -> i32 {
     let month = if mp < 10 { mp + 3 } else { mp - 9 }; // [1, 12]
     let year = y + if month <= 2 { 1 } else { 0 };
     (year as i32) * 100 + (month as i32)
+}
+
+fn roll_exa_usage_ledger_entry_to_month(entry: &mut ExaUsageLedgerEntry, month: i32) -> bool {
+    if entry.requests_month == month {
+        return false;
+    }
+
+    entry.requests_month = month;
+    entry.requests_used = 0;
+    entry.usd_used_total = 0.0;
+    true
 }
 
 async fn append_log(logs: &Arc<Mutex<VecDeque<String>>>, level: &str, message: String) {
@@ -1173,7 +1192,10 @@ fn load_exa_usage_ledger_from_path(path: &PathBuf) -> ExaUsageLedger {
     serde_json::from_str(&text).unwrap_or_default()
 }
 
-fn persist_exa_usage_ledger_to_path(path: &PathBuf, snapshot: &ExaUsageLedger) -> Result<(), String> {
+fn persist_exa_usage_ledger_to_path(
+    path: &PathBuf,
+    snapshot: &ExaUsageLedger,
+) -> Result<(), String> {
     let text = serde_json::to_string_pretty(snapshot)
         .map_err(|e| format!("Failed to serialize Exa usage ledger: {}", e))?;
     fs::write(path, text).map_err(|e| format!("Failed to write Exa usage ledger: {}", e))?;
@@ -1648,10 +1670,7 @@ async fn record_exa_usage_ledger_after_success(
     let mut store = state.exa_usage_ledger.write().await;
     let entry = store.keys.entry(api_key.to_string()).or_default();
 
-    if entry.requests_month != month {
-        entry.requests_month = month;
-        entry.requests_used = 0;
-    }
+    let _ = roll_exa_usage_ledger_entry_to_month(entry, month);
 
     let is_free_request = entry.requests_used < EXA_FREE_REQUESTS_PER_MONTH;
     entry.requests_used = entry.requests_used.saturating_add(1);
@@ -1782,7 +1801,7 @@ async fn proxy_request_to_target(
         let Some(selected) = selected else {
             return json_error(
                 StatusCode::SERVICE_UNAVAILABLE,
-                "No active API keys available. Enable at least one key in Configuration.",
+                "All active API keys are cooling down. Please retry shortly.",
             );
         };
 
@@ -2107,194 +2126,209 @@ async fn start_proxy_internal(state: &AppState) -> Result<ProxyStatus, String> {
     let mut new_firecrawl_manager: Option<Arc<Mutex<RoundRobinKeyManager>>> = None;
     let mut new_tavily_manager: Option<Arc<Mutex<RoundRobinKeyManager>>> = None;
     let mut new_exa_manager: Option<Arc<Mutex<RoundRobinKeyManager>>> = None;
+    let startup_result: Result<(), String> = async {
+        if start_firecrawl {
+            let firecrawl_addr: SocketAddr = format!("{}:{}", config.host, config.port)
+                .parse()
+                .map_err(|e| format!("Invalid HOST/PORT: {}", e))?;
+            let firecrawl_listener = TcpListener::bind(firecrawl_addr)
+                .await
+                .map_err(|e| format!("Failed to bind {}: {}", config.listen_url(), e))?;
+            let firecrawl_local_addr = firecrawl_listener
+                .local_addr()
+                .map_err(|e| format!("Failed to resolve local addr: {}", e))?;
+            let firecrawl_listen_url = format!("http://{}", firecrawl_local_addr);
 
-    if start_firecrawl {
-        let firecrawl_addr: SocketAddr = format!("{}:{}", config.host, config.port)
-            .parse()
-            .map_err(|e| format!("Invalid HOST/PORT: {}", e))?;
-        let firecrawl_listener = TcpListener::bind(firecrawl_addr)
-            .await
-            .map_err(|e| format!("Failed to bind {}: {}", config.listen_url(), e))?;
-        let firecrawl_local_addr = firecrawl_listener
-            .local_addr()
-            .map_err(|e| format!("Failed to resolve local addr: {}", e))?;
-        let firecrawl_listen_url = format!("http://{}", firecrawl_local_addr);
+            let firecrawl_key_manager = Arc::new(Mutex::new(RoundRobinKeyManager::new(
+                config.firecrawl_api_keys.clone(),
+                config.firecrawl_disabled_api_keys.clone(),
+                config.key_cooldown_seconds,
+            )));
+            new_firecrawl_manager = Some(firecrawl_key_manager.clone());
 
-        let firecrawl_key_manager = Arc::new(Mutex::new(RoundRobinKeyManager::new(
-            config.firecrawl_api_keys.clone(),
-            config.firecrawl_disabled_api_keys.clone(),
-            config.key_cooldown_seconds,
-        )));
-        new_firecrawl_manager = Some(firecrawl_key_manager.clone());
+            let firecrawl_state = ProxyServerState {
+                provider: "firecrawl",
+                proxy_token: config.proxy_token.clone(),
+                upstream_base_url: config.upstream_base_url.clone(),
+                config: state.config.clone(),
+                config_file_path: state.config_file_path.clone(),
+                key_health: state.key_health.clone(),
+                key_health_file_path: state.key_health_file_path.clone(),
+                exa_usage_ledger_file_path: state.exa_usage_ledger_file_path.clone(),
+                exa_usage_ledger: state.exa_usage_ledger.clone(),
+                key_manager: firecrawl_key_manager,
+                http_client: http_client.clone(),
+                logs: state.logs.clone(),
+                metrics: state.metrics.clone(),
+            };
+            let firecrawl_router = build_firecrawl_router(firecrawl_state);
+            let (firecrawl_shutdown_tx, firecrawl_shutdown_rx) = oneshot::channel::<()>();
 
-        let firecrawl_state = ProxyServerState {
-            provider: "firecrawl",
-            proxy_token: config.proxy_token.clone(),
-            upstream_base_url: config.upstream_base_url.clone(),
-            config: state.config.clone(),
-            config_file_path: state.config_file_path.clone(),
-            key_health: state.key_health.clone(),
-            key_health_file_path: state.key_health_file_path.clone(),
-            exa_usage_ledger_file_path: state.exa_usage_ledger_file_path.clone(),
-            exa_usage_ledger: state.exa_usage_ledger.clone(),
-            key_manager: firecrawl_key_manager,
-            http_client: http_client.clone(),
-            logs: state.logs.clone(),
-            metrics: state.metrics.clone(),
-        };
-        let firecrawl_router = build_firecrawl_router(firecrawl_state);
-        let (firecrawl_shutdown_tx, firecrawl_shutdown_rx) = oneshot::channel::<()>();
+            append_log(
+                &state.logs,
+                "INFO",
+                format!("Firecrawl proxy starting at {}", firecrawl_listen_url),
+            )
+            .await;
 
-        append_log(
-            &state.logs,
-            "INFO",
-            format!("Firecrawl proxy starting at {}", firecrawl_listen_url),
-        )
-        .await;
+            let logs = state.logs.clone();
+            let firecrawl_join_handle = tauri::async_runtime::spawn(async move {
+                let server = axum::serve(firecrawl_listener, firecrawl_router)
+                    .with_graceful_shutdown(async move {
+                        let _ = firecrawl_shutdown_rx.await;
+                    });
 
-        let logs = state.logs.clone();
-        let firecrawl_join_handle = tauri::async_runtime::spawn(async move {
-            let server = axum::serve(firecrawl_listener, firecrawl_router).with_graceful_shutdown(
-                async move {
-                    let _ = firecrawl_shutdown_rx.await;
-                },
-            );
-
-            if let Err(err) = server.await {
-                append_log(&logs, "ERROR", format!("Firecrawl proxy crashed: {}", err)).await;
-            }
-        });
-
-        new_firecrawl_handle = Some(ServerHandle {
-            shutdown_tx: Some(firecrawl_shutdown_tx),
-            join_handle: firecrawl_join_handle,
-            listen_url: firecrawl_listen_url,
-        });
-    }
-
-    if start_tavily {
-        let tavily_addr: SocketAddr = format!("{}:{}", config.host, config.tavily_port)
-            .parse()
-            .map_err(|e| format!("Invalid HOST/TAVILY_PORT: {}", e))?;
-        let tavily_listener = TcpListener::bind(tavily_addr)
-            .await
-            .map_err(|e| format!("Failed to bind {}: {}", config.tavily_listen_url(), e))?;
-        let tavily_local_addr = tavily_listener
-            .local_addr()
-            .map_err(|e| format!("Failed to resolve tavily local addr: {}", e))?;
-        let tavily_listen_url = format!("http://{}", tavily_local_addr);
-
-        let tavily_key_manager = Arc::new(Mutex::new(RoundRobinKeyManager::new(
-            config.tavily_api_keys.clone(),
-            config.tavily_disabled_api_keys.clone(),
-            config.key_cooldown_seconds,
-        )));
-        new_tavily_manager = Some(tavily_key_manager.clone());
-
-        let tavily_state = ProxyServerState {
-            provider: "tavily",
-            proxy_token: config.proxy_token.clone(),
-            upstream_base_url: config.tavily_upstream_base_url.clone(),
-            config: state.config.clone(),
-            config_file_path: state.config_file_path.clone(),
-            key_health: state.key_health.clone(),
-            key_health_file_path: state.key_health_file_path.clone(),
-            exa_usage_ledger_file_path: state.exa_usage_ledger_file_path.clone(),
-            exa_usage_ledger: state.exa_usage_ledger.clone(),
-            key_manager: tavily_key_manager,
-            http_client: http_client.clone(),
-            logs: state.logs.clone(),
-            metrics: state.metrics.clone(),
-        };
-        let tavily_router = build_tavily_router(tavily_state);
-        let (tavily_shutdown_tx, tavily_shutdown_rx) = oneshot::channel::<()>();
-
-        append_log(
-            &state.logs,
-            "INFO",
-            format!("Tavily proxy starting at {}", tavily_listen_url),
-        )
-        .await;
-
-        let logs = state.logs.clone();
-        let tavily_join_handle = tauri::async_runtime::spawn(async move {
-            let server =
-                axum::serve(tavily_listener, tavily_router).with_graceful_shutdown(async move {
-                    let _ = tavily_shutdown_rx.await;
-                });
-
-            if let Err(err) = server.await {
-                append_log(&logs, "ERROR", format!("Tavily proxy crashed: {}", err)).await;
-            }
-        });
-
-        new_tavily_handle = Some(ServerHandle {
-            shutdown_tx: Some(tavily_shutdown_tx),
-            join_handle: tavily_join_handle,
-            listen_url: tavily_listen_url,
-        });
-    }
-
-    if start_exa {
-        let exa_addr: SocketAddr = format!("{}:{}", config.host, config.exa_port)
-            .parse()
-            .map_err(|e| format!("Invalid HOST/EXA_PORT: {}", e))?;
-        let exa_listener = TcpListener::bind(exa_addr)
-            .await
-            .map_err(|e| format!("Failed to bind {}: {}", config.exa_listen_url(), e))?;
-        let exa_local_addr = exa_listener
-            .local_addr()
-            .map_err(|e| format!("Failed to resolve exa local addr: {}", e))?;
-        let exa_listen_url = format!("http://{}", exa_local_addr);
-
-        let exa_key_manager = Arc::new(Mutex::new(RoundRobinKeyManager::new(
-            config.exa_api_keys.clone(),
-            config.exa_disabled_api_keys.clone(),
-            config.key_cooldown_seconds,
-        )));
-        new_exa_manager = Some(exa_key_manager.clone());
-
-        let exa_state = ProxyServerState {
-            provider: "exa",
-            proxy_token: config.proxy_token.clone(),
-            upstream_base_url: config.exa_upstream_base_url.clone(),
-            config: state.config.clone(),
-            config_file_path: state.config_file_path.clone(),
-            key_health: state.key_health.clone(),
-            key_health_file_path: state.key_health_file_path.clone(),
-            exa_usage_ledger_file_path: state.exa_usage_ledger_file_path.clone(),
-            exa_usage_ledger: state.exa_usage_ledger.clone(),
-            key_manager: exa_key_manager,
-            http_client: http_client.clone(),
-            logs: state.logs.clone(),
-            metrics: state.metrics.clone(),
-        };
-        let exa_router = build_exa_router(exa_state);
-        let (exa_shutdown_tx, exa_shutdown_rx) = oneshot::channel::<()>();
-
-        append_log(
-            &state.logs,
-            "INFO",
-            format!("Exa proxy starting at {}", exa_listen_url),
-        )
-        .await;
-
-        let logs = state.logs.clone();
-        let exa_join_handle = tauri::async_runtime::spawn(async move {
-            let server = axum::serve(exa_listener, exa_router).with_graceful_shutdown(async move {
-                let _ = exa_shutdown_rx.await;
+                if let Err(err) = server.await {
+                    append_log(&logs, "ERROR", format!("Firecrawl proxy crashed: {}", err)).await;
+                }
             });
 
-            if let Err(err) = server.await {
-                append_log(&logs, "ERROR", format!("Exa proxy crashed: {}", err)).await;
-            }
-        });
+            new_firecrawl_handle = Some(ServerHandle {
+                shutdown_tx: Some(firecrawl_shutdown_tx),
+                join_handle: firecrawl_join_handle,
+                listen_url: firecrawl_listen_url,
+            });
+        }
 
-        new_exa_handle = Some(ServerHandle {
-            shutdown_tx: Some(exa_shutdown_tx),
-            join_handle: exa_join_handle,
-            listen_url: exa_listen_url,
-        });
+        if start_tavily {
+            let tavily_addr: SocketAddr = format!("{}:{}", config.host, config.tavily_port)
+                .parse()
+                .map_err(|e| format!("Invalid HOST/TAVILY_PORT: {}", e))?;
+            let tavily_listener = TcpListener::bind(tavily_addr)
+                .await
+                .map_err(|e| format!("Failed to bind {}: {}", config.tavily_listen_url(), e))?;
+            let tavily_local_addr = tavily_listener
+                .local_addr()
+                .map_err(|e| format!("Failed to resolve tavily local addr: {}", e))?;
+            let tavily_listen_url = format!("http://{}", tavily_local_addr);
+
+            let tavily_key_manager = Arc::new(Mutex::new(RoundRobinKeyManager::new(
+                config.tavily_api_keys.clone(),
+                config.tavily_disabled_api_keys.clone(),
+                config.key_cooldown_seconds,
+            )));
+            new_tavily_manager = Some(tavily_key_manager.clone());
+
+            let tavily_state = ProxyServerState {
+                provider: "tavily",
+                proxy_token: config.proxy_token.clone(),
+                upstream_base_url: config.tavily_upstream_base_url.clone(),
+                config: state.config.clone(),
+                config_file_path: state.config_file_path.clone(),
+                key_health: state.key_health.clone(),
+                key_health_file_path: state.key_health_file_path.clone(),
+                exa_usage_ledger_file_path: state.exa_usage_ledger_file_path.clone(),
+                exa_usage_ledger: state.exa_usage_ledger.clone(),
+                key_manager: tavily_key_manager,
+                http_client: http_client.clone(),
+                logs: state.logs.clone(),
+                metrics: state.metrics.clone(),
+            };
+            let tavily_router = build_tavily_router(tavily_state);
+            let (tavily_shutdown_tx, tavily_shutdown_rx) = oneshot::channel::<()>();
+
+            append_log(
+                &state.logs,
+                "INFO",
+                format!("Tavily proxy starting at {}", tavily_listen_url),
+            )
+            .await;
+
+            let logs = state.logs.clone();
+            let tavily_join_handle = tauri::async_runtime::spawn(async move {
+                let server = axum::serve(tavily_listener, tavily_router).with_graceful_shutdown(
+                    async move {
+                        let _ = tavily_shutdown_rx.await;
+                    },
+                );
+
+                if let Err(err) = server.await {
+                    append_log(&logs, "ERROR", format!("Tavily proxy crashed: {}", err)).await;
+                }
+            });
+
+            new_tavily_handle = Some(ServerHandle {
+                shutdown_tx: Some(tavily_shutdown_tx),
+                join_handle: tavily_join_handle,
+                listen_url: tavily_listen_url,
+            });
+        }
+
+        if start_exa {
+            let exa_addr: SocketAddr = format!("{}:{}", config.host, config.exa_port)
+                .parse()
+                .map_err(|e| format!("Invalid HOST/EXA_PORT: {}", e))?;
+            let exa_listener = TcpListener::bind(exa_addr)
+                .await
+                .map_err(|e| format!("Failed to bind {}: {}", config.exa_listen_url(), e))?;
+            let exa_local_addr = exa_listener
+                .local_addr()
+                .map_err(|e| format!("Failed to resolve exa local addr: {}", e))?;
+            let exa_listen_url = format!("http://{}", exa_local_addr);
+
+            let exa_key_manager = Arc::new(Mutex::new(RoundRobinKeyManager::new(
+                config.exa_api_keys.clone(),
+                config.exa_disabled_api_keys.clone(),
+                config.key_cooldown_seconds,
+            )));
+            new_exa_manager = Some(exa_key_manager.clone());
+
+            let exa_state = ProxyServerState {
+                provider: "exa",
+                proxy_token: config.proxy_token.clone(),
+                upstream_base_url: config.exa_upstream_base_url.clone(),
+                config: state.config.clone(),
+                config_file_path: state.config_file_path.clone(),
+                key_health: state.key_health.clone(),
+                key_health_file_path: state.key_health_file_path.clone(),
+                exa_usage_ledger_file_path: state.exa_usage_ledger_file_path.clone(),
+                exa_usage_ledger: state.exa_usage_ledger.clone(),
+                key_manager: exa_key_manager,
+                http_client: http_client.clone(),
+                logs: state.logs.clone(),
+                metrics: state.metrics.clone(),
+            };
+            let exa_router = build_exa_router(exa_state);
+            let (exa_shutdown_tx, exa_shutdown_rx) = oneshot::channel::<()>();
+
+            append_log(
+                &state.logs,
+                "INFO",
+                format!("Exa proxy starting at {}", exa_listen_url),
+            )
+            .await;
+
+            let logs = state.logs.clone();
+            let exa_join_handle = tauri::async_runtime::spawn(async move {
+                let server =
+                    axum::serve(exa_listener, exa_router).with_graceful_shutdown(async move {
+                        let _ = exa_shutdown_rx.await;
+                    });
+
+                if let Err(err) = server.await {
+                    append_log(&logs, "ERROR", format!("Exa proxy crashed: {}", err)).await;
+                }
+            });
+
+            new_exa_handle = Some(ServerHandle {
+                shutdown_tx: Some(exa_shutdown_tx),
+                join_handle: exa_join_handle,
+                listen_url: exa_listen_url,
+            });
+        }
+
+        Ok(())
+    }
+    .await;
+
+    if let Err(err) = startup_result {
+        rollback_new_server_handles(
+            &mut new_firecrawl_handle,
+            &mut new_tavily_handle,
+            &mut new_exa_handle,
+        )
+        .await;
+        return Err(err);
     }
 
     let status = {
@@ -2356,25 +2390,16 @@ async fn stop_proxy_internal(state: &AppState) -> Result<ProxyStatus, String> {
         return Ok(compose_proxy_status(&runtime, &config));
     }
 
-    if let Some(mut handle) = firecrawl_handle {
-        if let Some(shutdown_tx) = handle.shutdown_tx.take() {
-            let _ = shutdown_tx.send(());
-        }
-        let _ = handle.join_handle.await;
+    if let Some(handle) = firecrawl_handle {
+        stop_server_handle(handle).await;
     }
 
-    if let Some(mut handle) = tavily_handle {
-        if let Some(shutdown_tx) = handle.shutdown_tx.take() {
-            let _ = shutdown_tx.send(());
-        }
-        let _ = handle.join_handle.await;
+    if let Some(handle) = tavily_handle {
+        stop_server_handle(handle).await;
     }
 
-    if let Some(mut handle) = exa_handle {
-        if let Some(shutdown_tx) = handle.shutdown_tx.take() {
-            let _ = shutdown_tx.send(());
-        }
-        let _ = handle.join_handle.await;
+    if let Some(handle) = exa_handle {
+        stop_server_handle(handle).await;
     }
 
     // Clear active key manager references
@@ -3504,7 +3529,10 @@ async fn fetch_firecrawl_usage_for_keys(
         let Some(entry) = provider_health.get(key) else {
             continue;
         };
-        if force_refresh || !key_health_has_usage_metrics(entry) || !key_health_usage_is_fresh(entry, now) {
+        if force_refresh
+            || !key_health_has_usage_metrics(entry)
+            || !key_health_usage_is_fresh(entry, now)
+        {
             continue;
         }
         verified_keys.insert(key.as_str());
@@ -3817,7 +3845,10 @@ async fn fetch_tavily_usage_for_keys(
         let Some(entry) = provider_health.get(key) else {
             continue;
         };
-        if force_refresh || !key_health_has_usage_metrics(entry) || !key_health_usage_is_fresh(entry, now) {
+        if force_refresh
+            || !key_health_has_usage_metrics(entry)
+            || !key_health_usage_is_fresh(entry, now)
+        {
             continue;
         }
         verified_keys.insert(key.as_str());
@@ -4023,11 +4054,7 @@ async fn fetch_exa_usage_for_keys(
         let mut store = state.exa_usage_ledger.write().await;
         for key in keys {
             let entry = store.keys.entry(key.to_string()).or_default();
-            if entry.requests_month != month {
-                entry.requests_month = month;
-                entry.requests_used = 0;
-                should_persist = true;
-            }
+            should_persist |= roll_exa_usage_ledger_entry_to_month(entry, month);
             requests_used_sum = requests_used_sum.saturating_add(entry.requests_used);
             usd_used_sum += entry.usd_used_total;
         }
@@ -4079,21 +4106,26 @@ fn cached_provider_usage_if_fresh(
         "exa" => &cached.exa,
         _ => return None,
     };
-    if snapshot.fetched_at == 0 {
-        return None;
+    if should_reuse_cached_provider_usage(snapshot, now) {
+        return Some(snapshot.clone());
     }
+    None
+}
+
+fn should_reuse_cached_provider_usage(snapshot: &ProviderUsageSnapshot, now: u64) -> bool {
+    if snapshot.fetched_at == 0 {
+        return false;
+    }
+
     let has_metrics =
         snapshot.used.is_some() || snapshot.limit.is_some() || snapshot.remaining.is_some();
-    if now.saturating_sub(snapshot.fetched_at) < USAGE_CACHE_TTL_SECS
+
+    now.saturating_sub(snapshot.fetched_at) < USAGE_CACHE_TTL_SECS
         && (has_metrics
             || snapshot
                 .error
                 .as_deref()
                 .is_some_and(|v| v.contains("status 429")))
-    {
-        return Some(snapshot.clone());
-    }
-    None
 }
 
 #[tauri::command]
@@ -4106,19 +4138,17 @@ async fn get_usage_snapshot(state: tauri::State<'_, AppState>) -> Result<UsageSn
 
     let now = now_ts();
     let cached = state.usage_cache.read().await.clone();
-    let cached_firecrawl = cached.as_ref().map(|v| v.firecrawl.clone());
-    let cached_tavily = cached.as_ref().map(|v| v.tavily.clone());
     let mut refreshed_any = false;
 
     let firecrawl = if !config.firecrawl_enabled() {
         ProviderUsageSnapshot::not_configured()
     } else if firecrawl_keys.is_empty() {
         ProviderUsageSnapshot::no_enabled_key()
-    } else if cached_firecrawl
+    } else if let Some(hit) = cached
         .as_ref()
-        .is_some_and(|v| now.saturating_sub(v.fetched_at) < USAGE_CACHE_TTL_SECS)
+        .and_then(|v| cached_provider_usage_if_fresh(v, "firecrawl", now))
     {
-        cached_firecrawl.unwrap()
+        hit
     } else {
         refreshed_any = true;
         fetch_firecrawl_usage_for_keys(state.inner(), &config, &firecrawl_keys, false).await
@@ -4128,11 +4158,11 @@ async fn get_usage_snapshot(state: tauri::State<'_, AppState>) -> Result<UsageSn
         ProviderUsageSnapshot::not_configured()
     } else if tavily_keys.is_empty() {
         ProviderUsageSnapshot::no_enabled_key()
-    } else if cached_tavily
+    } else if let Some(hit) = cached
         .as_ref()
-        .is_some_and(|v| now.saturating_sub(v.fetched_at) < USAGE_CACHE_TTL_SECS)
+        .and_then(|v| cached_provider_usage_if_fresh(v, "tavily", now))
     {
-        cached_tavily.unwrap()
+        hit
     } else {
         refreshed_any = true;
         fetch_tavily_usage_for_keys(state.inner(), &config, &tavily_keys, false).await
@@ -4596,6 +4626,36 @@ mod tests {
     }
 
     #[test]
+    fn retryable_429_keeps_key_unavailable_until_cooldown_expires() {
+        let mut manager = RoundRobinKeyManager::new(vec!["fc-key-1".to_string()], Vec::new(), 60);
+        let selected = manager.select_key().expect("one key should be selectable");
+        let action = manager.mark_retryable_failure(selected.index, 429);
+        assert!(matches!(action, KeyFailureAction::Cooldown));
+        assert!(
+            manager.select_key().is_none(),
+            "cooling key should not be selected again immediately"
+        );
+    }
+
+    #[test]
+    fn exa_usage_ledger_rollover_resets_monthly_totals() {
+        let mut entry = ExaUsageLedgerEntry {
+            usd_used_total: 4.5,
+            requests_month: 202601,
+            requests_used: 1234,
+        };
+
+        assert!(roll_exa_usage_ledger_entry_to_month(&mut entry, 202602));
+        assert_eq!(entry.requests_month, 202602);
+        assert_eq!(entry.requests_used, 0);
+        assert_eq!(entry.usd_used_total, 0.0);
+        assert!(
+            !roll_exa_usage_ledger_entry_to_month(&mut entry, 202602),
+            "same month should not reset twice"
+        );
+    }
+
+    #[test]
     fn derive_status_flags_handles_running_and_degraded_states() {
         let mut config = base_config();
         config.firecrawl_api_keys = vec!["fc-key-1".to_string()];
@@ -4817,6 +4877,79 @@ mod tests {
             "expected cache bypass for non-429 errors within ttl"
         );
     }
+
+    fn unique_test_path(label: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("balance-proxy-{}-{}", label, Uuid::new_v4()))
+    }
+
+    fn make_test_state(config: ProxyConfig) -> AppState {
+        AppState {
+            config: Arc::new(RwLock::new(config)),
+            config_file_path: unique_test_path("config.json"),
+            usage_cache_file_path: unique_test_path("usage-cache.json"),
+            usage_cache: Arc::new(RwLock::new(None)),
+            dashboard_state_file_path: unique_test_path("dashboard-state.json"),
+            dashboard_state: Arc::new(RwLock::new(DashboardPersistedState::default())),
+            key_health_file_path: unique_test_path("key-health.json"),
+            key_health: Arc::new(RwLock::new(KeyHealthStore::default())),
+            exa_usage_ledger_file_path: unique_test_path("exa-usage-ledger.json"),
+            exa_usage_ledger: Arc::new(RwLock::new(ExaUsageLedger::default())),
+            runtime: Arc::new(Mutex::new(ProxyRuntime::default())),
+            logs: Arc::new(Mutex::new(VecDeque::new())),
+            metrics: Arc::new(Mutex::new(RuntimeMetrics::default())),
+            active_key_managers: Arc::new(Mutex::new(ActiveKeyManagers::default())),
+        }
+    }
+
+    fn reserve_free_port() -> u16 {
+        std::net::TcpListener::bind(("127.0.0.1", 0))
+            .expect("bind ephemeral port")
+            .local_addr()
+            .expect("local addr")
+            .port()
+    }
+
+    #[tokio::test]
+    async fn start_proxy_rolls_back_new_listeners_when_later_provider_fails() {
+        let firecrawl_port = reserve_free_port();
+        let exa_port = reserve_free_port();
+        let blocked_tavily_listener =
+            std::net::TcpListener::bind(("127.0.0.1", 0)).expect("bind occupied tavily port");
+        let tavily_port = blocked_tavily_listener
+            .local_addr()
+            .expect("occupied tavily addr")
+            .port();
+
+        let mut config = base_config();
+        config.firecrawl_api_keys = vec!["fc-key-1".to_string()];
+        config.upstream_base_url = "https://api.firecrawl.dev".to_string();
+        config.tavily_api_keys = vec!["tvly-key-1".to_string()];
+        config.tavily_upstream_base_url = "https://api.tavily.com".to_string();
+        config.port = firecrawl_port;
+        config.tavily_port = tavily_port;
+        config.exa_port = exa_port;
+
+        let state = make_test_state(config);
+        let err = start_proxy_internal(&state)
+            .await
+            .expect_err("startup should fail when tavily port is occupied");
+        assert!(
+            err.contains("Failed to bind"),
+            "unexpected startup error: {}",
+            err
+        );
+
+        let runtime = state.runtime.lock().await;
+        assert!(runtime.firecrawl_handle.is_none());
+        assert!(runtime.tavily_handle.is_none());
+        assert!(runtime.exa_handle.is_none());
+        drop(runtime);
+
+        assert!(
+            std::net::TcpListener::bind(("127.0.0.1", firecrawl_port)).is_ok(),
+            "firecrawl listener should be released after rollback"
+        );
+    }
 }
 
 fn show_main_window<R: tauri::Runtime, M: Manager<R>>(manager: &M) {
@@ -4832,6 +4965,8 @@ fn show_main_window<R: tauri::Runtime, M: Manager<R>>(manager: &M) {
 
 #[cfg(target_os = "macos")]
 fn macos_tray_template_icon() -> tauri::image::Image<'static> {
+    // Raw RGBA (64x64) derived from `icons/trayTemplate.png`, so we don't need to enable
+    // Tauri's `image-png` feature just to decode a PNG at runtime.
     tauri::image::Image::new(include_bytes!("../icons/trayTemplate.rgba"), 64, 64)
 }
 
@@ -4934,8 +5069,7 @@ pub fn run() {
                 let key_health =
                     load_key_health_from_path(&key_health_file_path).unwrap_or_default();
                 let exa_usage_ledger_file_path = exa_usage_ledger_path(&app.handle())?;
-                let exa_usage_ledger =
-                    load_exa_usage_ledger_from_path(&exa_usage_ledger_file_path);
+                let exa_usage_ledger = load_exa_usage_ledger_from_path(&exa_usage_ledger_file_path);
                 let mut logs = VecDeque::new();
                 logs.push_back(format!(
                     "{} [INFO] App initialized. Config path is in app data directory.",
@@ -4993,17 +5127,12 @@ pub fn run() {
 
                 // 托盘菜单：状态项 + 常规操作
                 let status_item =
-                    MenuItem::with_id(app, "tray_status", "⏹ 代理已停止", false, None::<&str>)
+                    MenuItem::with_id(app, "tray_status", "代理已停止", false, None::<&str>)
                         .map_err(|e| format!("Failed to create tray status item: {}", e))?;
 
-                let toggle_item = MenuItem::with_id(
-                    app,
-                    "tray_toggle_proxy",
-                    "▶️ 启动代理",
-                    true,
-                    None::<&str>,
-                )
-                .map_err(|e| format!("Failed to create tray toggle item: {}", e))?;
+                let toggle_item =
+                    MenuItem::with_id(app, "tray_toggle_proxy", "启动代理", true, None::<&str>)
+                        .map_err(|e| format!("Failed to create tray toggle item: {}", e))?;
 
                 let tray_menu = MenuBuilder::new(app)
                     .item(&status_item)
@@ -5047,46 +5176,45 @@ pub fn run() {
                         let status = compose_proxy_status(&runtime, &config);
                         drop(runtime);
 
-                        let (label, tooltip) = if status.running {
-                            let urls: Vec<String> = [
-                                status
-                                    .listen_url
-                                    .as_deref()
-                                    .map(|u| format!("FC {}", u.trim_start_matches("http://"))),
-                                status
-                                    .tavily_listen_url
-                                    .as_deref()
-                                    .map(|u| format!("TV {}", u.trim_start_matches("http://"))),
-                                status
-                                    .exa_listen_url
-                                    .as_deref()
-                                    .map(|u| format!("EXA {}", u.trim_start_matches("http://"))),
-                            ]
-                            .into_iter()
-                            .flatten()
-                            .collect();
-                            let url_str = urls.join(" | ");
-                            (
-                                format!("🟢 运行中"),
-                                format!("Balance Proxy - 运行中\n{}", url_str),
-                            )
-                        } else if status.any_running {
-                            (
-                                "🟡 部分运行".to_string(),
-                                "Balance Proxy - 部分运行".to_string(),
-                            )
-                        } else {
-                            (
-                                "⏹ 代理已停止".to_string(),
-                                "Balance Proxy - 代理已停止".to_string(),
-                            )
-                        };
+                        let (label, tooltip) =
+                            if status.running {
+                                let urls: Vec<String> =
+                                    [
+                                        status.listen_url.as_deref().map(|u| {
+                                            format!("FC {}", u.trim_start_matches("http://"))
+                                        }),
+                                        status.tavily_listen_url.as_deref().map(|u| {
+                                            format!("TV {}", u.trim_start_matches("http://"))
+                                        }),
+                                        status.exa_listen_url.as_deref().map(|u| {
+                                            format!("EXA {}", u.trim_start_matches("http://"))
+                                        }),
+                                    ]
+                                    .into_iter()
+                                    .flatten()
+                                    .collect();
+                                let url_str = urls.join(" | ");
+                                (
+                                    "运行中".to_string(),
+                                    format!("Balance Proxy - 运行中\n{}", url_str),
+                                )
+                            } else if status.any_running {
+                                (
+                                    "部分运行".to_string(),
+                                    "Balance Proxy - 部分运行".to_string(),
+                                )
+                            } else {
+                                (
+                                    "代理已停止".to_string(),
+                                    "Balance Proxy - 代理已停止".to_string(),
+                                )
+                            };
 
                         let _ = status_item_bg.set_text(&label);
                         let _ = toggle_item_bg.set_text(if status.any_running {
-                            "⏹ 停止代理"
+                            "停止代理"
                         } else {
-                            "▶️ 启动代理"
+                            "启动代理"
                         });
                         if let Some(t) = tray_app.tray_by_id("main-tray") {
                             let _ = t.set_tooltip(Some(tooltip.as_str()));
